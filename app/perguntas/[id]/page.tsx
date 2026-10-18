@@ -1,9 +1,9 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { CheckCircle2, ThumbsUp } from 'lucide-react';
-import { acceptAnswer, reportContent, voteAnswer } from '@/app/actions';
+import { Bookmark, CheckCircle2, ThumbsUp } from 'lucide-react';
+import { acceptAnswer, reportContent, toggleSaveQuestion, voteAnswer } from '@/app/actions';
 import { currentUser } from '@/lib/auth';
-import { getAnswers, getQuestion } from '@/lib/store';
+import { getAnswers, getQuestion, isQuestionSaved } from '@/lib/store';
 import { AcademicContent } from '@/components/academic-content';
 import { AnswerComposer } from '@/components/answer-composer';
 import { ClearQuestionDraft } from '@/components/question-composer';
@@ -19,6 +19,7 @@ export default async function QuestionPage({ params, searchParams }: { params: P
   if (!question || (['PENDING', 'REMOVED'].includes(question.status) && user?.id !== question.author_id && user?.role !== 'ADMIN')) notFound();
   const answers = getAnswers(id);
   const isOwner = user?.id === question.author_id;
+  const saved = user ? isQuestionSaved(user.id, question.id) : false;
   return <div className="mx-auto max-w-4xl px-5 py-8 md:px-10">
     {created === '1' && <ClearQuestionDraft/>}
     <Link href="/" className="text-sm font-semibold text-slate-500">← Voltar ao fórum</Link>
@@ -33,7 +34,7 @@ export default async function QuestionPage({ params, searchParams }: { params: P
     <article className="mt-5 rounded-xl border border-line bg-white p-5 md:p-8">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <h1 className="max-w-2xl text-2xl font-black leading-tight tracking-tight md:text-3xl">{question.title}</h1>
-        {question.status === 'RESOLVED' && <span className="inline-flex items-center gap-1 rounded-md bg-[#e5f2ef] px-2.5 py-1 text-xs font-bold text-teal"><CheckCircle2 size={15}/> Resolvida</span>}
+        <div className="flex flex-wrap items-center gap-2">{user && <form action={toggleSaveQuestion}><input type="hidden" name="questionId" value={question.id}/><input type="hidden" name="intent" value={saved ? 'remove' : 'save'}/><input type="hidden" name="returnTo" value={`/perguntas/${question.id}`}/><button aria-pressed={saved} className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-bold ${saved ? 'border-accent bg-[#eef2fb] text-accent' : 'border-line text-slate-600 hover:border-accent hover:text-accent'}`}><Bookmark size={14} fill={saved ? 'currentColor' : 'none'}/>{saved ? 'Salva' : 'Salvar'}</button></form>}{question.status === 'RESOLVED' && <span className="inline-flex items-center gap-1 rounded-md bg-[#e5f2ef] px-2.5 py-1 text-xs font-bold text-teal"><CheckCircle2 size={15}/> Resolvida</span>}</div>
       </div>
       <div className="mt-4 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500"><span className="font-semibold text-slate-700">{question.author_name}</span><span>·</span><span>{roleLabel(question.author_role, question.author_verified)}</span><span>·</span><time dateTime={question.created_at}>{dateLabel(question.created_at)}</time></div>
       <div className="mt-7 border-t border-line pt-6"><AcademicContent>{question.body}</AcademicContent></div>

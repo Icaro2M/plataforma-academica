@@ -2,10 +2,11 @@ import Link from 'next/link';
 import type { Route } from 'next';
 import { ArrowRight, BookOpenText, Search, SlidersHorizontal } from 'lucide-react';
 import { currentUser } from '@/lib/auth';
-import { getQuestions, getSubjects, getUserStats } from '@/lib/store';
+import { countQuestions, getQuestions, getSubjectCatalog, getSubjects, getUserStats } from '@/lib/store';
 import { QuestionCard } from '@/components/question-card';
+import { Pagination } from '@/components/pagination';
 
-type Params = { busca?: string; disciplina?: string; estado?: string };
+type Params = { busca?: string; disciplina?: string; estado?: string; pagina?: string };
 
 export default async function ForumPage({ searchParams }: { searchParams: Promise<Params> }) {
   const raw = await searchParams;
@@ -16,9 +17,14 @@ export default async function ForumPage({ searchParams }: { searchParams: Promis
   };
   const user = await currentUser();
   const subjects = getSubjects();
-  const questions = getQuestions({ search: filters.busca, subjectId: Number(filters.disciplina) || undefined, status: filters.estado });
-  const subjectsWithQuestions = new Set(getQuestions().map(question => question.subject_id));
-  const featuredSubjects = [...subjects].sort((a, b) => Number(subjectsWithQuestions.has(b.id)) - Number(subjectsWithQuestions.has(a.id)));
+  const questionFilters = { search: filters.busca, subjectId: Number(filters.disciplina) || undefined, status: filters.estado };
+  const totalQuestions = countQuestions(questionFilters);
+  const pageSize = 10;
+  const totalPages = Math.max(1, Math.ceil(totalQuestions / pageSize));
+  const requestedPage = Number.parseInt(typeof raw.pagina === 'string' ? raw.pagina : '1', 10);
+  const page = Math.min(totalPages, Number.isSafeInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1);
+  const questions = getQuestions({ ...questionFilters, limit: pageSize, offset: (page - 1) * pageSize });
+  const featuredSubjects = getSubjectCatalog().sort((a, b) => b.question_count - a.question_count);
   const stats = user ? getUserStats(user.id) : null;
   const hrefFor = (change: Partial<typeof filters>) => {
     const next = { ...filters, ...change };
@@ -26,6 +32,14 @@ export default async function ForumPage({ searchParams }: { searchParams: Promis
     if (next.busca) params.set('busca', next.busca);
     if (next.disciplina) params.set('disciplina', next.disciplina);
     if (next.estado) params.set('estado', next.estado);
+    return `/${params.size ? `?${params}` : ''}` as Route;
+  };
+  const hrefForPage = (target: number) => {
+    const params = new URLSearchParams();
+    if (filters.busca) params.set('busca', filters.busca);
+    if (filters.disciplina) params.set('disciplina', filters.disciplina);
+    if (filters.estado) params.set('estado', filters.estado);
+    if (target > 1) params.set('pagina', String(target));
     return `/${params.size ? `?${params}` : ''}` as Route;
   };
 
@@ -47,10 +61,10 @@ export default async function ForumPage({ searchParams }: { searchParams: Promis
           <nav aria-label="Filtrar perguntas por estado" className="flex gap-5 text-[12px] sm:gap-7">
             {([['', 'Recentes'], ['unanswered', 'Sem resposta'], ['resolved', 'Resolvidas']] as const).map(([status, label]) => <Link key={status} href={hrefFor({ estado: status })} aria-current={filters.estado === status ? 'page' : undefined} className={`-mb-px border-b-2 pb-3 font-semibold transition-colors ${filters.estado === status ? 'border-accent text-brand' : 'border-transparent text-muted hover:text-brand'}`}>{label}</Link>)}
           </nav>
-          <span className="pb-3 text-[11px] text-muted">{questions.length === 100 ? 'Mostrando 100 perguntas' : `${questions.length} ${questions.length === 1 ? 'pergunta' : 'perguntas'}`}</span>
+          <span className="pb-3 text-[11px] text-muted">{totalQuestions} {totalQuestions === 1 ? 'pergunta' : 'perguntas'}</span>
         </div>
         {(filters.busca || filters.disciplina) && <div className="flex items-center gap-2 py-3 text-[11px] text-muted"><span>Filtros aplicados</span><Link href="/" className="font-semibold text-accent hover:underline">Limpar filtros</Link></div>}
-        {questions.length ? <section aria-label="Lista de perguntas" className="overflow-hidden rounded-xl border border-line bg-white shadow-[0_1px_2px_rgba(15,23,42,.025)]">{questions.map(q => <QuestionCard key={q.id} question={q}/>)}</section> : <div className="rounded-xl border border-line bg-white px-6 py-12 text-center"><BookOpenText className="mx-auto text-[#a4afc0]" size={27}/><h2 className="mt-3 font-display text-[16px] font-bold text-brand">Nenhuma pergunta encontrada</h2><p className="mt-1 text-[13px] text-muted">Tente outra busca ou comece uma conversa.</p><div className="mt-4 flex justify-center gap-3 text-[12px] font-semibold"><Link href="/" className="text-muted hover:text-brand">Limpar filtros</Link><Link href="/perguntas/nova" className="text-accent hover:underline">Fazer pergunta →</Link></div></div>}
+        {questions.length ? <><section aria-label="Lista de perguntas" className="overflow-hidden rounded-xl border border-line bg-white shadow-[0_1px_2px_rgba(15,23,42,.025)]">{questions.map(q => <QuestionCard key={q.id} question={q}/>)}</section><Pagination page={page} totalPages={totalPages} hrefForPage={hrefForPage}/></> : <div className="rounded-xl border border-line bg-white px-6 py-12 text-center"><BookOpenText className="mx-auto text-[#a4afc0]" size={27}/><h2 className="mt-3 font-display text-[16px] font-bold text-brand">Nenhuma pergunta encontrada</h2><p className="mt-1 text-[13px] text-muted">Tente outra busca ou comece uma conversa.</p><div className="mt-4 flex justify-center gap-3 text-[12px] font-semibold"><Link href="/" className="text-muted hover:text-brand">Limpar filtros</Link><Link href="/perguntas/nova" className="text-accent hover:underline">Fazer pergunta →</Link></div></div>}
       </div>
       <aside aria-label="Informações da comunidade" className="space-y-4">
         <section className="rounded-xl border border-line bg-white p-5 shadow-[0_1px_2px_rgba(15,23,42,.025)]"><div className="flex items-center justify-between"><h2 className="font-display text-[13px] font-bold text-brand">Disciplinas</h2><BookOpenText size={16} className="text-[#8a9ab2]"/></div><p className="mt-1 text-[11px] leading-4 text-muted">Explore dúvidas por área de estudo.</p><div className="mt-4 space-y-0.5">{featuredSubjects.slice(0, 5).map(subject => <Link key={subject.id} href={`/disciplinas/${subject.id}` as Route} className="group flex items-center justify-between gap-2 rounded-md px-2 py-2 text-[12px] text-[#495a70] transition-colors hover:bg-[#f4f7fd] hover:text-accent"><span className="min-w-0 truncate">{subject.name}</span><ArrowRight size={13} className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100"/></Link>)}</div><Link href="/disciplinas" className="mt-3 inline-flex items-center gap-1 text-[11px] font-semibold text-accent hover:underline">Ver todas as disciplinas <ArrowRight size={13}/></Link></section>

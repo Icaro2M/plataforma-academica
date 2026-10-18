@@ -1,0 +1,3 @@
+export default function NotificationsLoading() {
+  return <div className="mx-auto max-w-4xl animate-pulse px-5 py-8 md:px-10"><div className="h-8 w-56 rounded-md bg-slate-200"/><div className="mt-3 h-4 w-96 max-w-full rounded-md bg-slate-100"/><div className="mt-7 space-y-px overflow-hidden rounded-lg border border-line bg-line">{Array.from({ length: 4 }, (_, index) => <div key={index} className="h-24 bg-white p-4"><div className="h-4 w-2/3 rounded bg-slate-100"/><div className="mt-3 h-3 w-1/2 rounded bg-slate-100"/></div>)}</div><span className="sr-only">Carregando notificações</span></div>;
+}

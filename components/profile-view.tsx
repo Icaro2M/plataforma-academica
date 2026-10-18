@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { CheckCircle2, ShieldCheck } from 'lucide-react';
-import { all, getUserStats, type User } from '@/lib/store';
+import { all, getFollowedSubjects, getUserStats, type User } from '@/lib/store';
 import { requestRole } from '@/app/actions';
 
 type SubjectActivity = { id: number; name: string; code: string; course_name: string; questions: number; answers: number };
@@ -17,6 +17,7 @@ export function ProfileView({ user, own = false, error, success }: { user: User;
     FROM subjects s JOIN courses c ON c.id=s.course_id WHERE questions>0 OR answers>0 ORDER BY answers DESC,questions DESC,s.name`, user.id, user.id);
   const questions = all<RecentQuestion>(`SELECT q.id,q.title,s.name subject_name,q.status,q.created_at FROM questions q JOIN subjects s ON s.id=q.subject_id WHERE q.author_id=? AND q.status IN ('OPEN','RESOLVED') ORDER BY q.created_at DESC LIMIT 4`, user.id);
   const answers = all<RecentAnswer>(`SELECT a.question_id,q.title,s.name subject_name,(q.accepted_answer_id=a.id) accepted,a.created_at FROM answers a JOIN questions q ON q.id=a.question_id JOIN subjects s ON s.id=q.subject_id WHERE a.author_id=? AND a.status='APPROVED' AND q.status IN ('OPEN','RESOLVED') ORDER BY a.created_at DESC LIMIT 4`, user.id);
+  const followed = own ? getFollowedSubjects(user.id) : [];
   const roleRequest = own ? all<RoleRequest>('SELECT requested_role,status,created_at FROM role_requests WHERE user_id=? ORDER BY created_at DESC LIMIT 1', user.id)[0] : undefined;
   const role = user.role === 'MONITOR' ? 'Monitor' : user.role === 'PROFESSOR' ? 'Professor' : user.role === 'ADMIN' ? 'Coordenação' : 'Aluno';
   return <div className="mx-auto max-w-5xl px-5 py-8 md:px-10">
@@ -33,6 +34,7 @@ export function ProfileView({ user, own = false, error, success }: { user: User;
     </section>
     <section className="mt-7 rounded-xl border border-line bg-white p-5 md:p-6" aria-labelledby="profile-subjects"><div className="flex flex-wrap items-baseline justify-between gap-2"><h2 id="profile-subjects" className="text-lg font-black">Disciplinas em que participa</h2><span className="text-xs text-slate-500">{subjects.length} {subjects.length === 1 ? 'disciplina' : 'disciplinas'}</span></div>
       {subjects.length ? <div className="mt-4 grid gap-2 sm:grid-cols-2">{subjects.map(subject => <Link key={subject.id} href={`/disciplinas/${subject.id}`} className="rounded-lg border border-line p-3 hover:border-teal"><p className="font-bold">{subject.name} <span className="text-xs font-normal text-slate-500">{subject.code}</span></p><p className="mt-1 text-xs text-slate-500">{subject.course_name} · {subject.questions} {subject.questions === 1 ? 'pergunta' : 'perguntas'} · {subject.answers} {subject.answers === 1 ? 'resposta' : 'respostas'}</p></Link>)}</div> : <p className="mt-4 text-sm text-slate-500">A participação em disciplinas aparece aqui após publicar perguntas ou respostas aprovadas.</p>}
+      {own && <div className="mt-6 border-t border-line pt-5"><div className="flex items-baseline justify-between gap-2"><h3 className="font-bold">Disciplinas acompanhadas</h3><span className="text-xs text-slate-500">{followed.length}</span></div>{followed.length ? <div className="mt-3 flex flex-wrap gap-2">{followed.map(subject => <Link key={subject.id} href={`/disciplinas/${subject.id}`} className="rounded-md bg-[#eef2fb] px-2.5 py-1.5 text-xs font-bold text-accent hover:underline">{subject.name}</Link>)}</div> : <p className="mt-2 text-sm text-slate-500">Você ainda não acompanha disciplinas.</p>}</div>}
     </section>
     <div className="mt-7 grid gap-4 md:grid-cols-2">
       <section className="rounded-xl border border-line bg-white p-5" aria-labelledby="profile-questions"><h2 id="profile-questions" className="text-lg font-black">Perguntas recentes</h2>{questions.length ? <ul className="mt-3 divide-y divide-line">{questions.map(question => <li key={question.id} className="py-3"><Link href={`/perguntas/${question.id}`} className="text-sm font-semibold hover:text-teal">{question.title}</Link><p className="mt-1 text-xs text-slate-500">{question.subject_name} · {dateLabel(question.created_at)}</p></li>)}</ul> : <p className="mt-4 text-sm text-slate-500">Nenhuma pergunta publicada ainda.</p>}</section>
