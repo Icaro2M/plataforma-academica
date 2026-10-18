@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import './globals.css';
+import 'katex/dist/katex.min.css';
 import { Sidebar } from '@/components/sidebar';
 import { AppHeader } from '@/components/app-header';
 import { currentUser } from '@/lib/auth';

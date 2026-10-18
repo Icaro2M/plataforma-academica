@@ -48,7 +48,7 @@ export async function createQuestion(form: FormData) {
   const id = randomUUID();
   database().prepare('INSERT INTO questions (id,author_id,subject_id,title,body,status,moderation_reason) VALUES (?,?,?,?,?,?,?)').run(id,user.id,subjectId,title,body,moderation.status === 'PENDING' ? 'PENDING' : 'OPEN',moderation.reason);
   revalidatePath('/');
-  redirect(`/perguntas/${id}` as Route);
+  redirect(`/perguntas/${id}?created=1` as Route);
 }
 
 export async function createAnswer(form: FormData) {
@@ -64,7 +64,7 @@ export async function createAnswer(form: FormData) {
   database().prepare('INSERT INTO answers (id,question_id,author_id,body,status,moderation_reason) VALUES (?,?,?,?,?,?)').run(randomUUID(),questionId,user.id,body,moderation.status,moderation.reason);
   revalidatePath(`/perguntas/${questionId}`);
   revalidatePath('/ranking');
-  redirect(`/perguntas/${questionId}?success=${encodeURIComponent(moderation.status === 'PENDING' ? 'Resposta enviada para revisão' : 'Resposta publicada')}` as Route);
+  redirect(`/perguntas/${questionId}?answered=1&success=${encodeURIComponent(moderation.status === 'PENDING' ? 'Resposta enviada para revisão' : 'Resposta publicada')}` as Route);
 }
 
 export async function acceptAnswer(form: FormData) {
