@@ -9,6 +9,11 @@ export function AcademicEditor({ value, onChange, minLength, id, placeholder }: 
   const [tab, setTab] = useState<'write' | 'preview'>('write');
   const field = useRef<HTMLTextAreaElement>(null);
 
+  function selectTab(next: 'write' | 'preview') {
+    setTab(next);
+    requestAnimationFrame(() => document.getElementById(`${id}-${next}-tab`)?.focus());
+  }
+
   function insert(before: string, after = '', sample = 'texto') {
     const textarea = field.current;
     if (!textarea) return;
@@ -26,12 +31,12 @@ export function AcademicEditor({ value, onChange, minLength, id, placeholder }: 
   return <div className="overflow-hidden rounded-xl border border-line bg-white">
     <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line bg-slate-50 px-3 py-2">
       <div className="flex gap-1" role="tablist" aria-label="Modo do editor">
-        <button type="button" role="tab" aria-selected={tab === 'write'} onClick={() => setTab('write')} className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${tab === 'write' ? 'bg-white text-ink shadow-sm' : 'text-slate-500'}`}>Escrever</button>
-        <button type="button" role="tab" aria-selected={tab === 'preview'} onClick={() => setTab('preview')} className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${tab === 'preview' ? 'bg-white text-ink shadow-sm' : 'text-slate-500'}`}>Prévia</button>
+        <button id={`${id}-write-tab`} type="button" role="tab" aria-controls={`${id}-write-panel`} aria-selected={tab === 'write'} tabIndex={tab === 'write' ? 0 : -1} onClick={() => setTab('write')} onKeyDown={event => { if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') { event.preventDefault(); selectTab('preview'); } }} className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${tab === 'write' ? 'bg-white text-ink shadow-sm' : 'text-slate-500'}`}>Escrever</button>
+        <button id={`${id}-preview-tab`} type="button" role="tab" aria-controls={`${id}-preview-panel`} aria-selected={tab === 'preview'} tabIndex={tab === 'preview' ? 0 : -1} onClick={() => setTab('preview')} onKeyDown={event => { if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') { event.preventDefault(); selectTab('write'); } }} className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${tab === 'preview' ? 'bg-white text-ink shadow-sm' : 'text-slate-500'}`}>Prévia</button>
       </div>
       <span className="text-xs text-slate-500">{value.length.toLocaleString('pt-BR')} / 10.000 caracteres</span>
     </div>
-    {tab === 'write' ? <>
+    {tab === 'write' ? <div id={`${id}-write-panel`} role="tabpanel" aria-labelledby={`${id}-write-tab`}>
       <div className="flex flex-wrap gap-1 border-b border-line px-3 py-2" aria-label="Formatação Markdown">
         <button type="button" onClick={() => insert('**', '**', 'destaque')} className="editor-tool" title="Negrito">Negrito</button>
         <button type="button" onClick={() => insert('*', '*', 'ênfase')} className="editor-tool" title="Itálico">Itálico</button>
@@ -41,7 +46,7 @@ export function AcademicEditor({ value, onChange, minLength, id, placeholder }: 
         <button type="button" onClick={() => insert('$', '$', 'x^2')} className="editor-tool" title="Fórmula LaTeX">Fórmula</button>
       </div>
       <textarea ref={field} id={id} name="body" value={value} onChange={event => onChange(event.target.value)} required minLength={minLength} maxLength={10000} className="min-h-64 w-full resize-y border-0 p-4 text-sm leading-7 outline-none focus:outline-none" placeholder={placeholder} aria-describedby={`${id}-hint`} />
-    </> : <div role="tabpanel" className="min-h-64 p-4">{value.trim() ? <AcademicContent>{value}</AcademicContent> : <p className="text-sm text-slate-500">A prévia aparece aqui enquanto você escreve.</p>}<input type="hidden" name="body" value={value}/></div>}
+    </div> : <div id={`${id}-preview-panel`} role="tabpanel" aria-labelledby={`${id}-preview-tab`} className="min-h-64 p-4">{value.trim() ? <AcademicContent>{value}</AcademicContent> : <p className="text-sm text-slate-500">A prévia aparece aqui enquanto você escreve.</p>}<input type="hidden" name="body" value={value}/></div>}
     <p id={`${id}-hint`} className="border-t border-line px-4 py-2 text-xs text-slate-500">Markdown, listas, links, blocos de código e fórmulas em $LaTeX$. Imagens externas não são exibidas.</p>
   </div>;
 }
