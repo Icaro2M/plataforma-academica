@@ -1,8 +1,11 @@
 import 'server-only';
-import { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync as DatabaseConnection } from 'node:sqlite';
+import { createRequire } from 'node:module';
 import { randomUUID, scryptSync, timingSafeEqual, createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
+
+const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as { DatabaseSync: new (path: string) => DatabaseConnection };
 
 export type Role = 'STUDENT' | 'MONITOR' | 'PROFESSOR' | 'ADMIN';
 export type User = { id: string; name: string; email: string; role: Role; verified: number; institution_id: number | null; course_id: number | null; institution_name?: string | null; course_name?: string | null; created_at: string };
@@ -12,9 +15,12 @@ export type Subject = { id: number; course_id: number; name: string; code: strin
 export type SubjectSummary = Subject & { institution_id: number; question_count: number; latest_question_at: string | null };
 export type Question = { id: string; author_id: string; subject_id: number; title: string; body: string; status: string; moderation_reason: string | null; accepted_answer_id: string | null; created_at: string; author_name: string; author_role: Role; author_verified: number; subject_name: string; course_name: string; institution_name: string; answer_count: number };
 export type Answer = { id: string; question_id: string; author_id: string; body: string; status: string; moderation_reason: string | null; created_at: string; author_name: string; author_role: Role; author_verified: number; useful_count: number };
+export type SavedQuestion = Question & { saved_at: string };
+export type FollowedSubject = SubjectSummary & { followed_at: string; follower_count: number };
+export type Notification = { id: string; user_id: string; type: string; actor_id: string | null; actor_name: string | null; entity_type: string | null; entity_id: string | null; title: string; body: string | null; read_at: string | null; created_at: string };
 
 const file = process.env.ACADEMIA_DB_PATH ? path.resolve(process.env.ACADEMIA_DB_PATH) : path.join(process.cwd(), 'data', 'academia.sqlite');
-const globalDb = globalThis as typeof globalThis & { academiaDb?: DatabaseSync };
+const globalDb = globalThis as typeof globalThis & { academiaDb?: DatabaseConnection };
 
 function hashPassword(password: string, salt = randomUUID()) {
   return `${salt}:${scryptSync(password, salt, 64).toString('hex')}`;
@@ -30,7 +36,7 @@ export function verifyPassword(password: string, stored: string) {
 
 export function hashToken(token: string) { return createHash('sha256').update(token).digest('hex'); }
 
-function init(db: DatabaseSync) {
+function init(db: DatabaseConnection) {
   db.exec(`
     PRAGMA foreign_keys = ON;
     PRAGMA journal_mode = WAL;
@@ -44,10 +50,17 @@ function init(db: DatabaseSync) {
     CREATE TABLE IF NOT EXISTS answer_votes (answer_id TEXT NOT NULL REFERENCES answers(id) ON DELETE CASCADE, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, PRIMARY KEY(answer_id,user_id));
     CREATE TABLE IF NOT EXISTS reports (id TEXT PRIMARY KEY, reporter_id TEXT NOT NULL REFERENCES users(id), target_type TEXT NOT NULL CHECK(target_type IN ('QUESTION','ANSWER')), target_id TEXT NOT NULL, reason TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'OPEN', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(reporter_id,target_type,target_id));
     CREATE TABLE IF NOT EXISTS role_requests (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, requested_role TEXT NOT NULL CHECK(requested_role IN ('MONITOR','PROFESSOR')), details TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING','APPROVED','REJECTED')), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, reviewed_at TEXT);
+    CREATE TABLE IF NOT EXISTS question_saves (user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, question_id TEXT NOT NULL REFERENCES questions(id) ON DELETE CASCADE, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(user_id,question_id));
+    CREATE TABLE IF NOT EXISTS subject_follows (user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, subject_id INTEGER NOT NULL REFERENCES subjects(id) ON DELETE CASCADE, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(user_id,subject_id));
+    CREATE TABLE IF NOT EXISTS notifications (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, type TEXT NOT NULL, actor_id TEXT REFERENCES users(id) ON DELETE SET NULL, entity_type TEXT, entity_id TEXT, title TEXT NOT NULL, body TEXT, read_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
     CREATE UNIQUE INDEX IF NOT EXISTS one_pending_role_request ON role_requests(user_id) WHERE status='PENDING';
     CREATE INDEX IF NOT EXISTS questions_feed_idx ON questions(status,created_at DESC);
     CREATE INDEX IF NOT EXISTS answers_question_idx ON answers(question_id,status);
     CREATE INDEX IF NOT EXISTS reports_status_idx ON reports(status,created_at);
+    CREATE INDEX IF NOT EXISTS question_saves_user_idx ON question_saves(user_id,created_at DESC);
+    CREATE INDEX IF NOT EXISTS subject_follows_user_idx ON subject_follows(user_id,created_at DESC);
+    CREATE INDEX IF NOT EXISTS notifications_user_idx ON notifications(user_id,read_at,created_at DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS notifications_event_unique ON notifications(user_id,type,entity_id,actor_id);
   `);
   const count = (db.prepare('SELECT count(*) as count FROM institutions').get() as { count: number }).count;
   if (count) {
@@ -132,7 +145,8 @@ export function getSubjectCounts(subjectId: number) {
 
 const questionSelect = `SELECT q.*,u.name author_name,u.role author_role,u.verified author_verified,s.name subject_name,c.name course_name,i.name institution_name,(SELECT count(*) FROM answers a WHERE a.question_id=q.id AND a.status='APPROVED') answer_count FROM questions q JOIN users u ON u.id=q.author_id JOIN subjects s ON s.id=q.subject_id JOIN courses c ON c.id=s.course_id JOIN institutions i ON i.id=c.institution_id`;
 export function getQuestion(id: string) { return one<Question>(`${questionSelect} WHERE q.id=?`, id); }
-export function getQuestions(filters: { search?: string; subjectId?: number; status?: string; institutionId?: number } = {}) {
+export type QuestionFilters = { search?: string; subjectId?: number; status?: string; institutionId?: number; limit?: number; offset?: number };
+function questionFilter(filters: QuestionFilters) {
   const where = ["q.status IN ('OPEN','RESOLVED')"];
   const params: (string | number)[] = [];
   if (filters.search) { where.push('(q.title LIKE ? OR q.body LIKE ? OR s.name LIKE ?)'); params.push(...Array(3).fill(`%${filters.search}%`)); }
@@ -140,7 +154,17 @@ export function getQuestions(filters: { search?: string; subjectId?: number; sta
   if (filters.status === 'unanswered') where.push("NOT EXISTS (SELECT 1 FROM answers a WHERE a.question_id=q.id AND a.status='APPROVED')");
   if (filters.status === 'resolved') where.push("q.status='RESOLVED'");
   if (filters.institutionId) { where.push('i.id=?'); params.push(filters.institutionId); }
-  return all<Question>(`${questionSelect} WHERE ${where.join(' AND ')} ORDER BY q.created_at DESC LIMIT 100`, ...params);
+  return { where, params };
+}
+export function getQuestions(filters: QuestionFilters = {}) {
+  const { where, params } = questionFilter(filters);
+  const limit = Math.min(100, Math.max(1, Math.trunc(filters.limit ?? 100)));
+  const offset = Math.max(0, Math.trunc(filters.offset ?? 0));
+  return all<Question>(`${questionSelect} WHERE ${where.join(' AND ')} ORDER BY q.created_at DESC LIMIT ? OFFSET ?`, ...params, limit, offset);
+}
+export function countQuestions(filters: Omit<QuestionFilters, 'limit' | 'offset'> = {}) {
+  const { where, params } = questionFilter(filters);
+  return one<{ count: number }>(`SELECT count(*) count FROM questions q JOIN subjects s ON s.id=q.subject_id JOIN courses c ON c.id=s.course_id JOIN institutions i ON i.id=c.institution_id WHERE ${where.join(' AND ')}`, ...params)?.count ?? 0;
 }
 export function getAnswers(questionId: string) {
   return all<Answer>(`SELECT a.*,u.name author_name,u.role author_role,u.verified author_verified,(SELECT count(*) FROM answer_votes v WHERE v.answer_id=a.id) useful_count FROM answers a JOIN users u ON u.id=a.author_id WHERE a.question_id=? AND a.status='APPROVED' ORDER BY a.created_at ASC`,questionId);
@@ -150,6 +174,38 @@ export function getUserStats(id: string) {
 }
 export function getRanking(institutionId?: number) {
   return all<{ id:string; name:string; role:Role; verified:number; institution_name:string; answers:number; accepted:number; useful:number; points:number }>(`SELECT u.id,u.name,u.role,u.verified,i.name institution_name,(SELECT count(*) FROM answers a WHERE a.author_id=u.id AND a.status='APPROVED') answers,(SELECT count(*) FROM questions q JOIN answers a ON a.id=q.accepted_answer_id WHERE a.author_id=u.id AND a.status='APPROVED' AND q.status='RESOLVED') accepted,(SELECT count(*) FROM answer_votes v JOIN answers a ON a.id=v.answer_id WHERE a.author_id=u.id AND a.status='APPROVED') useful,((SELECT count(*) FROM answers a WHERE a.author_id=u.id AND a.status='APPROVED')*2+(SELECT count(*) FROM questions q JOIN answers a ON a.id=q.accepted_answer_id WHERE a.author_id=u.id AND a.status='APPROVED' AND q.status='RESOLVED')*10+(SELECT count(*) FROM answer_votes v JOIN answers a ON a.id=v.answer_id WHERE a.author_id=u.id AND a.status='APPROVED')) points FROM users u JOIN institutions i ON i.id=u.institution_id WHERE u.role IN ('MONITOR','PROFESSOR') AND u.verified=1 ${institutionId ? 'AND u.institution_id=?' : ''} ORDER BY points DESC,answers DESC,u.name LIMIT 50`, ...(institutionId ? [institutionId] : []));
+}
+export function isQuestionSaved(userId: string, questionId: string) {
+  return Boolean(one('SELECT 1 FROM question_saves WHERE user_id=? AND question_id=?', userId, questionId));
+}
+export function getSavedQuestions(userId: string) {
+  return all<SavedQuestion>(`SELECT q.*,u.name author_name,u.role author_role,u.verified author_verified,s.name subject_name,c.name course_name,i.name institution_name,
+    (SELECT count(*) FROM answers a WHERE a.question_id=q.id AND a.status='APPROVED') answer_count,qs.created_at saved_at
+    FROM question_saves qs JOIN questions q ON q.id=qs.question_id JOIN users u ON u.id=q.author_id JOIN subjects s ON s.id=q.subject_id JOIN courses c ON c.id=s.course_id JOIN institutions i ON i.id=c.institution_id
+    WHERE qs.user_id=? AND q.status IN ('OPEN','RESOLVED') ORDER BY qs.created_at DESC`, userId);
+}
+export function isSubjectFollowed(userId: string, subjectId: number) {
+  return Boolean(one('SELECT 1 FROM subject_follows WHERE user_id=? AND subject_id=?', userId, subjectId));
+}
+export function getSubjectFollowerCount(subjectId: number) {
+  return one<{ count: number }>('SELECT count(*) count FROM subject_follows WHERE subject_id=?', subjectId)?.count ?? 0;
+}
+export function getFollowedSubjects(userId: string) {
+  return all<FollowedSubject>(`SELECT s.*,c.institution_id,c.name course_name,i.name institution_name,f.created_at followed_at,
+    (SELECT count(*) FROM questions q WHERE q.subject_id=s.id AND q.status IN ('OPEN','RESOLVED')) question_count,
+    (SELECT max(q.created_at) FROM questions q WHERE q.subject_id=s.id AND q.status IN ('OPEN','RESOLVED')) latest_question_at,
+    (SELECT count(*) FROM subject_follows sf WHERE sf.subject_id=s.id) follower_count
+    FROM subject_follows f JOIN subjects s ON s.id=f.subject_id JOIN courses c ON c.id=s.course_id JOIN institutions i ON i.id=c.institution_id
+    WHERE f.user_id=? ORDER BY f.created_at DESC`, userId);
+}
+export function createNotification(userId: string, type: string, actorId: string | null, entityType: string | null, entityId: string | null, title: string, body?: string | null) {
+  database().prepare('INSERT OR IGNORE INTO notifications (id,user_id,type,actor_id,entity_type,entity_id,title,body) VALUES (?,?,?,?,?,?,?,?)').run(randomUUID(),userId,type,actorId,entityType,entityId,title,body ?? null);
+}
+export function getNotifications(userId: string, limit = 50) {
+  return all<Notification>(`SELECT n.*,u.name actor_name FROM notifications n LEFT JOIN users u ON u.id=n.actor_id WHERE n.user_id=? ORDER BY n.created_at DESC LIMIT ?`, userId, Math.min(100, Math.max(1, limit)));
+}
+export function getUnreadNotificationCount(userId: string) {
+  return one<{ count: number }>('SELECT count(*) count FROM notifications WHERE user_id=? AND read_at IS NULL', userId)?.count ?? 0;
 }
 export function createUser(name: string, email: string, password: string, institutionId: number, courseId: number) {
   const id = randomUUID();

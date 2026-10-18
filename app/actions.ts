@@ -4,13 +4,14 @@ import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import type { Route } from 'next';
 import { currentUser, endSession, startSession } from '@/lib/auth';
-import { database, getQuestion, getUser, one, createUser, verifyPassword } from '@/lib/store';
+import { createNotification, database, getQuestion, getUser, one, createUser, verifyPassword } from '@/lib/store';
 import { moderateContent } from '@/lib/moderation';
 
 const value = (form: FormData, key: string) => String(form.get(key) || '').trim();
 const errorUrl = (path: string, message: string) => `${path}?error=${encodeURIComponent(message)}` as Route;
 const requireUser = async () => { const user = await currentUser(); if (!user) redirect(errorUrl('/entrar','Entre para participar.')); return user; };
 const requireAdmin = async () => { const user = await requireUser(); if (user.role !== 'ADMIN') redirect('/'); return user; };
+const returnPath = (form: FormData, fallback: string) => { const path = value(form,'returnTo'); return (path.startsWith('/') && !path.startsWith('//') ? path : fallback) as Route; };
 
 export async function login(form: FormData) {
   const email = value(form,'email').toLowerCase();
@@ -61,7 +62,14 @@ export async function createAnswer(form: FormData) {
   if (body.length < 10 || body.length > 10000) redirect(errorUrl(`/perguntas/${questionId}`,'A resposta deve ter de 10 a 10.000 caracteres.'));
   const moderation = moderateContent(body,'ANSWER');
   if (moderation.status === 'BLOCKED') redirect(errorUrl(`/perguntas/${questionId}`,moderation.reason || 'Conteúdo não permitido.'));
-  database().prepare('INSERT INTO answers (id,question_id,author_id,body,status,moderation_reason) VALUES (?,?,?,?,?,?)').run(randomUUID(),questionId,user.id,body,moderation.status,moderation.reason);
+  const answerId = randomUUID();
+  const db = database();
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.prepare('INSERT INTO answers (id,question_id,author_id,body,status,moderation_reason) VALUES (?,?,?,?,?,?)').run(answerId,questionId,user.id,body,moderation.status,moderation.reason);
+    if (moderation.status === 'APPROVED') createNotification(question.author_id,'NEW_ANSWER',user.id,'QUESTION',questionId,'Sua pergunta recebeu uma resposta',question.title);
+    db.exec('COMMIT');
+  } catch { db.exec('ROLLBACK'); redirect(errorUrl(`/perguntas/${questionId}`,'Não foi possível publicar a resposta.')); }
   revalidatePath(`/perguntas/${questionId}`);
   revalidatePath('/ranking');
   redirect(`/perguntas/${questionId}?answered=1&success=${encodeURIComponent(moderation.status === 'PENDING' ? 'Resposta enviada para revisão' : 'Resposta publicada')}` as Route);
@@ -75,9 +83,10 @@ export async function acceptAnswer(form: FormData) {
   db.exec('BEGIN IMMEDIATE');
   try {
     const question = getQuestion(questionId);
-    const answer = one<{id:string}>('SELECT id FROM answers WHERE id=? AND question_id=? AND status=?',answerId,questionId,'APPROVED');
+    const answer = one<{id:string;author_id:string}>('SELECT id,author_id FROM answers WHERE id=? AND question_id=? AND status=?',answerId,questionId,'APPROVED');
     if (!question || question.author_id !== user.id || !answer || question.status === 'REMOVED') throw new Error('Sem permissão para aceitar esta resposta.');
     db.prepare('UPDATE questions SET accepted_answer_id=?,status=? WHERE id=?').run(answerId,'RESOLVED',questionId);
+    if (answer.author_id !== user.id) createNotification(answer.author_id,'ANSWER_ACCEPTED',user.id,'QUESTION',questionId,'Sua resposta foi marcada como solução',question.title);
     db.exec('COMMIT');
   } catch { db.exec('ROLLBACK'); redirect(errorUrl(`/perguntas/${questionId}`,'Não foi possível marcar a solução.')); }
   revalidatePath(`/perguntas/${questionId}`); revalidatePath('/ranking'); revalidatePath('/');
@@ -104,6 +113,50 @@ export async function reportContent(form: FormData) {
   const exists = type === 'QUESTION' ? one('SELECT id FROM questions WHERE id=?',id) : one('SELECT id FROM answers WHERE id=? AND question_id=?',id,questionId);
   if (exists) database().prepare('INSERT OR IGNORE INTO reports (id,reporter_id,target_type,target_id,reason) VALUES (?,?,?,?,?)').run(randomUUID(),user.id,type,id,reason);
   redirect(`/perguntas/${questionId}?success=Denúncia+enviada+para+revisão` as Route);
+}
+
+export async function toggleSaveQuestion(form: FormData) {
+  const user = await requireUser();
+  const questionId = value(form,'questionId');
+  const intent = value(form,'intent');
+  const destination = returnPath(form,`/perguntas/${questionId}`);
+  const question = one<{id:string}>("SELECT id FROM questions WHERE id=? AND status IN ('OPEN','RESOLVED')",questionId);
+  if (!question) redirect('/');
+  if (intent === 'remove') database().prepare('DELETE FROM question_saves WHERE user_id=? AND question_id=?').run(user.id,questionId);
+  else database().prepare('INSERT OR IGNORE INTO question_saves (user_id,question_id) VALUES (?,?)').run(user.id,questionId);
+  revalidatePath('/minha-atividade');
+  revalidatePath(`/perguntas/${questionId}`);
+  redirect(destination);
+}
+
+export async function toggleSubjectFollow(form: FormData) {
+  const user = await requireUser();
+  const subjectId = Number(value(form,'subjectId'));
+  const intent = value(form,'intent');
+  const destination = returnPath(form,`/disciplinas/${subjectId}`);
+  if (!Number.isSafeInteger(subjectId) || !one('SELECT id FROM subjects WHERE id=?',subjectId)) redirect('/disciplinas');
+  if (intent === 'remove') database().prepare('DELETE FROM subject_follows WHERE user_id=? AND subject_id=?').run(user.id,subjectId);
+  else database().prepare('INSERT OR IGNORE INTO subject_follows (user_id,subject_id) VALUES (?,?)').run(user.id,subjectId);
+  revalidatePath('/minha-atividade');
+  revalidatePath('/perfil');
+  revalidatePath(`/disciplinas/${subjectId}`);
+  redirect(destination);
+}
+
+export async function markNotificationRead(form: FormData) {
+  const user = await requireUser();
+  const notificationId = value(form,'notificationId');
+  const destination = returnPath(form,'/notificacoes');
+  database().prepare('UPDATE notifications SET read_at=COALESCE(read_at,CURRENT_TIMESTAMP) WHERE id=? AND user_id=?').run(notificationId,user.id);
+  revalidatePath('/notificacoes');
+  redirect(destination);
+}
+
+export async function markAllNotificationsRead() {
+  const user = await requireUser();
+  database().prepare('UPDATE notifications SET read_at=CURRENT_TIMESTAMP WHERE user_id=? AND read_at IS NULL').run(user.id);
+  revalidatePath('/notificacoes');
+  redirect('/notificacoes' as Route);
 }
 
 export async function createInstitution(form: FormData) {
@@ -143,7 +196,7 @@ export async function requestRole(form: FormData) {
   revalidatePath('/perfil'); redirect('/perfil?success=Solicitação+enviada+à+coordenação');
 }
 export async function reviewRoleRequest(form: FormData) {
-  await requireAdmin();
+  const admin = await requireAdmin();
   const id = value(form,'requestId'); const decision = value(form,'decision');
   if (!['APPROVE','REJECT'].includes(decision)) redirect('/administracao');
   const db = database(); db.exec('BEGIN IMMEDIATE');
@@ -152,21 +205,29 @@ export async function reviewRoleRequest(form: FormData) {
     if (request) {
       if (decision === 'APPROVE') db.prepare('UPDATE users SET role=?,verified=1 WHERE id=?').run(request.requested_role,request.user_id);
       db.prepare('UPDATE role_requests SET status=?,reviewed_at=CURRENT_TIMESTAMP WHERE id=?').run(decision === 'APPROVE' ? 'APPROVED' : 'REJECTED',id);
+      createNotification(request.user_id,'ROLE_REQUEST_REVIEWED',admin.id,'PROFILE',id,decision === 'APPROVE' ? 'Seu vínculo acadêmico foi aprovado' : 'Sua solicitação de vínculo foi revisada',decision === 'APPROVE' ? 'Seu perfil agora exibe a função verificada.' : 'Consulte seu perfil para enviar uma nova solicitação com dados atualizados.');
     }
     db.exec('COMMIT');
   } catch (error) { db.exec('ROLLBACK'); throw error; }
   revalidatePath('/administracao'); revalidatePath('/ranking'); redirect('/administracao');
 }
 export async function reviewContent(form: FormData) {
-  await requireAdmin();
+  const admin = await requireAdmin();
   const type = value(form,'type'); const id = value(form,'id'); const decision = value(form,'decision');
   const table = type === 'QUESTION' ? 'questions' : type === 'ANSWER' ? 'answers' : null;
   if (!table || !['APPROVE','REMOVE'].includes(decision)) redirect('/administracao');
   const status = decision === 'REMOVE' ? 'REMOVED' : type === 'QUESTION' ? 'OPEN' : 'APPROVED';
   const db = database(); db.exec('BEGIN IMMEDIATE');
   try {
+    const content = type === 'QUESTION'
+      ? one<{author_id:string;question_id:string;question_author_id:string;title:string}>('SELECT author_id,id question_id,author_id question_author_id,title FROM questions WHERE id=?',id)
+      : one<{author_id:string;question_id:string;question_author_id:string;title:string}>('SELECT a.author_id,a.question_id,q.author_id question_author_id,q.title FROM answers a JOIN questions q ON q.id=a.question_id WHERE a.id=?',id);
     db.prepare(`UPDATE ${table} SET status=?,moderation_reason=NULL WHERE id=?`).run(status,id);
     if (type === 'ANSWER' && decision === 'REMOVE') db.prepare("UPDATE questions SET accepted_answer_id=NULL,status='OPEN' WHERE accepted_answer_id=?").run(id);
+    if (content) {
+      createNotification(content.author_id,'CONTENT_REVIEWED',admin.id,'QUESTION',content.question_id,decision === 'APPROVE' ? 'Seu conteúdo foi aprovado' : 'Seu conteúdo foi removido',content.title);
+      if (type === 'ANSWER' && decision === 'APPROVE' && content.question_author_id !== content.author_id) createNotification(content.question_author_id,'NEW_ANSWER',content.author_id,'QUESTION',content.question_id,'Sua pergunta recebeu uma resposta',content.title);
+    }
     db.exec('COMMIT');
   } catch (error) { db.exec('ROLLBACK'); throw error; }
   revalidatePath('/administracao'); revalidatePath('/'); redirect('/administracao');
