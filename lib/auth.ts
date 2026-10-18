@@ -8,7 +8,8 @@ export async function currentUser(): Promise<User | null> {
   const token = (await cookies()).get(cookieName)?.value;
   if (!token) return null;
   const session = one<{ user_id: string }>('SELECT user_id FROM sessions WHERE token_hash=? AND expires_at > ?',hashToken(token),new Date().toISOString());
-  return session ? getUser(session.user_id) || null : null;
+  const user = session ? getUser(session.user_id) : null;
+  return user ? { ...user } : null;
 }
 
 export async function startSession(userId: string) {
