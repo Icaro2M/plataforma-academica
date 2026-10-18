@@ -9,6 +9,7 @@ export type User = { id: string; name: string; email: string; role: Role; verifi
 export type Institution = { id: number; name: string; kind: string; city: string };
 export type Course = { id: number; institution_id: number; name: string; institution_name?: string };
 export type Subject = { id: number; course_id: number; name: string; code: string; course_name: string; institution_name: string };
+export type SubjectSummary = Subject & { institution_id: number; question_count: number; latest_question_at: string | null };
 export type Question = { id: string; author_id: string; subject_id: number; title: string; body: string; status: string; moderation_reason: string | null; accepted_answer_id: string | null; created_at: string; author_name: string; author_role: Role; author_verified: number; subject_name: string; course_name: string; institution_name: string; answer_count: number };
 export type Answer = { id: string; question_id: string; author_id: string; body: string; status: string; moderation_reason: string | null; created_at: string; author_name: string; author_role: Role; author_verified: number; useful_count: number };
 
@@ -116,6 +117,18 @@ export function getUser(id: string) {
 export function getInstitutions() { return all<Institution>('SELECT * FROM institutions ORDER BY name'); }
 export function getCourses() { return all<Course>('SELECT c.*,i.name institution_name FROM courses c JOIN institutions i ON i.id=c.institution_id ORDER BY i.name,c.name'); }
 export function getSubjects() { return all<Subject>('SELECT s.*,c.name course_name,i.name institution_name FROM subjects s JOIN courses c ON c.id=s.course_id JOIN institutions i ON i.id=c.institution_id ORDER BY i.name,c.name,s.name'); }
+export function getSubjectCatalog() {
+  return all<SubjectSummary>(`SELECT s.*,c.institution_id,c.name course_name,i.name institution_name,
+    (SELECT count(*) FROM questions q WHERE q.subject_id=s.id AND q.status IN ('OPEN','RESOLVED')) question_count,
+    (SELECT max(q.created_at) FROM questions q WHERE q.subject_id=s.id AND q.status IN ('OPEN','RESOLVED')) latest_question_at
+    FROM subjects s JOIN courses c ON c.id=s.course_id JOIN institutions i ON i.id=c.institution_id
+    ORDER BY i.name,c.name,s.name`);
+}
+export function getSubjectCounts(subjectId: number) {
+  return one<{ unanswered: number; resolved: number }>(`SELECT
+    (SELECT count(*) FROM questions q WHERE q.subject_id=? AND q.status IN ('OPEN','RESOLVED') AND NOT EXISTS (SELECT 1 FROM answers a WHERE a.question_id=q.id AND a.status='APPROVED')) unanswered,
+    (SELECT count(*) FROM questions q WHERE q.subject_id=? AND q.status='RESOLVED') resolved`, subjectId, subjectId)!;
+}
 
 const questionSelect = `SELECT q.*,u.name author_name,u.role author_role,u.verified author_verified,s.name subject_name,c.name course_name,i.name institution_name,(SELECT count(*) FROM answers a WHERE a.question_id=q.id AND a.status='APPROVED') answer_count FROM questions q JOIN users u ON u.id=q.author_id JOIN subjects s ON s.id=q.subject_id JOIN courses c ON c.id=s.course_id JOIN institutions i ON i.id=c.institution_id`;
 export function getQuestion(id: string) { return one<Question>(`${questionSelect} WHERE q.id=?`, id); }
