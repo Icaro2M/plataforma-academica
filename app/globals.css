@@ -2,8 +2,20 @@
 @tailwind components;
 @tailwind utilities;
 
-:root { --background: #f7f5ef; --foreground: #17202a; }
+:root {
+  --background: #f7f8fa;
+  --foreground: #111827;
+  --brand: #243b63;
+  --accent: #3159d9;
+  --muted: #64748b;
+  --line: #e5e7eb;
+  --warm: #d97745;
+}
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--background); color: var(--foreground); font-family: Arial, sans-serif; }
+html { scroll-behavior: smooth; }
+body { margin: 0; background: var(--background); color: var(--foreground); font-family: 'Segoe UI Variable Text', 'Segoe UI', Arial, sans-serif; -webkit-font-smoothing: antialiased; }
 button, input, textarea, select { font: inherit; }
-.grain { background-image: radial-gradient(#17202a14 .7px, transparent .7px); background-size: 7px 7px; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+::selection { background: #dce5ff; color: var(--brand); }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }

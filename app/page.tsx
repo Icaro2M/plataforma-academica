@@ -1,6 +1,62 @@
 import Link from 'next/link';
-import { ArrowUpRight, Plus, Search, SlidersHorizontal, Sparkles } from 'lucide-react';
-import { questions } from '@/lib/demo-data';
+import type { Route } from 'next';
+import { ArrowRight, BookOpenText, Search, SlidersHorizontal } from 'lucide-react';
+import { currentUser } from '@/lib/auth';
+import { getQuestions, getSubjects, getUserStats } from '@/lib/store';
 import { QuestionCard } from '@/components/question-card';
 
-export default function ForumPage() { return <div className="grain min-h-screen"><header className="flex items-center justify-between border-b border-line bg-white/70 px-5 py-4 backdrop-blur md:px-10"><div><p className="text-xs font-semibold uppercase tracking-[.2em] text-coral">Comunidade acadêmica</p><h1 className="mt-1 text-2xl font-black tracking-tight md:text-3xl">Aprender junto é melhor.</h1></div><Link href="/perguntas/nova" className="flex items-center gap-2 rounded-xl bg-ink px-4 py-3 text-sm font-bold text-white shadow-lg shadow-ink/10 transition hover:bg-teal"><Plus size={17}/> <span className="hidden sm:inline">Fazer uma pergunta</span></Link></header><div className="mx-auto max-w-5xl px-5 py-8 md:px-10"><div className="mb-8 grid gap-4 md:grid-cols-[1fr_280px]"><div className="rounded-3xl bg-teal p-6 text-white md:p-8"><div className="mb-5 flex items-center gap-2 text-sm font-semibold text-teal-100"><Sparkles size={16}/> Espaço para trocar conhecimento</div><h2 className="max-w-md text-2xl font-black leading-tight md:text-3xl">Sua dúvida pode ser o começo de uma boa conversa.</h2><p className="mt-3 max-w-md text-sm leading-6 text-teal-50">Encontre respostas, compartilhe o que sabe e ajude a comunidade a avançar.</p></div><div className="rounded-3xl border border-line bg-white p-6"><p className="text-xs font-bold uppercase tracking-[.15em] text-slate-400">Seu impacto</p><div className="mt-5 flex items-end gap-3"><span className="text-4xl font-black">1.240</span><span className="mb-1 text-sm font-semibold text-teal">+80 esta semana</span></div><p className="mt-2 text-sm text-slate-500">pontos de reputação</p><Link href="/perfil" className="mt-5 flex items-center gap-1 text-sm font-bold text-ink">Ver meu perfil <ArrowUpRight size={15}/></Link></div></div><div className="mb-6 flex flex-col gap-3 md:flex-row"><div className="relative flex-1"><Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18}/><input className="w-full rounded-xl border border-line bg-white py-3 pl-11 pr-4 text-sm outline-none ring-teal/20 focus:ring-4" placeholder="Busque por uma dúvida, assunto ou tag..." /></div><button className="flex items-center justify-center gap-2 rounded-xl border border-line bg-white px-4 text-sm font-semibold text-slate-600"><SlidersHorizontal size={16}/> Filtros</button></div><div className="mb-4 flex items-center gap-5 border-b border-line text-sm"><button className="border-b-2 border-coral pb-3 font-bold text-ink">Recentes</button><button className="pb-3 text-slate-400">Sem resposta</button><button className="pb-3 text-slate-400">Resolvidas</button><span className="ml-auto hidden pb-3 text-xs text-slate-400 sm:block">{questions.length * 21 + 18} perguntas na comunidade</span></div><section>{questions.map(question => <QuestionCard key={question.id} question={question}/>)}</section></div></div> }
+type Params = { busca?: string; disciplina?: string; estado?: string };
+
+export default async function ForumPage({ searchParams }: { searchParams: Promise<Params> }) {
+  const raw = await searchParams;
+  const filters = {
+    busca: typeof raw.busca === 'string' ? raw.busca.slice(0, 100) : '',
+    disciplina: typeof raw.disciplina === 'string' ? raw.disciplina : '',
+    estado: raw.estado === 'unanswered' || raw.estado === 'resolved' ? raw.estado : '',
+  };
+  const user = await currentUser();
+  const subjects = getSubjects();
+  const questions = getQuestions({ search: filters.busca, subjectId: Number(filters.disciplina) || undefined, status: filters.estado });
+  const subjectsWithQuestions = new Set(getQuestions().map(question => question.subject_id));
+  const featuredSubjects = [...subjects].sort((a, b) => Number(subjectsWithQuestions.has(b.id)) - Number(subjectsWithQuestions.has(a.id)));
+  const stats = user ? getUserStats(user.id) : null;
+  const hrefFor = (change: Partial<typeof filters>) => {
+    const next = { ...filters, ...change };
+    const params = new URLSearchParams();
+    if (next.busca) params.set('busca', next.busca);
+    if (next.disciplina) params.set('disciplina', next.disciplina);
+    if (next.estado) params.set('estado', next.estado);
+    return `/${params.size ? `?${params}` : ''}` as Route;
+  };
+
+  return <div className="mx-auto w-full max-w-[1240px] px-5 pb-12 pt-8 sm:px-8 xl:px-10">
+    <div className="mb-7 flex items-end justify-between gap-4">
+      <div><p className="text-[11px] font-bold uppercase tracking-[.17em] text-accent">Comunidade acadêmica</p><h1 className="mt-2 font-display text-[26px] font-extrabold leading-[1.25] tracking-[-.055em] text-ink sm:text-[30px]">Perguntas da comunidade</h1><p className="mt-1.5 text-[13px] leading-5 text-muted">Encontre respostas e compartilhe o que você sabe.</p></div>
+    </div>
+    <div className="grid items-start gap-7 xl:grid-cols-[minmax(0,1fr)_252px]">
+      <div className="min-w-0">
+        <form action="/" className="rounded-xl border border-line bg-white p-3 shadow-[0_1px_2px_rgba(15,23,42,.025)] sm:p-4">
+          {filters.estado && <input type="hidden" name="estado" value={filters.estado}/>}
+          <div className="flex flex-col gap-2.5 sm:flex-row">
+            <label className="relative min-w-0 flex-1"><span className="sr-only">Buscar perguntas</span><Search className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-[#8090a7]" size={17}/><input name="busca" type="search" defaultValue={filters.busca} className="h-10 w-full rounded-lg border border-line bg-[#fcfdff] pl-10 pr-3 text-[13px] text-ink placeholder:text-[#8995a6] focus:border-accent focus:outline-none" placeholder="Buscar dúvidas, temas ou disciplinas"/></label>
+            <label className="relative sm:w-[220px]"><span className="sr-only">Filtrar por disciplina</span><select name="disciplina" defaultValue={filters.disciplina} className="h-10 w-full appearance-none rounded-lg border border-line bg-[#fcfdff] pl-3 pr-9 text-[12px] text-[#3d4b60] focus:border-accent focus:outline-none"><option value="">Todas as disciplinas</option>{subjects.map(s => <option key={s.id} value={s.id}>{s.name} · {s.course_name}</option>)}</select><SlidersHorizontal className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[#8390a3]" size={14}/></label>
+            <button className="h-10 rounded-lg bg-brand px-4 text-[12px] font-semibold text-white transition-colors hover:bg-[#304e81]">Buscar</button>
+          </div>
+        </form>
+        <div className="mt-6 flex flex-wrap items-end justify-between gap-x-3 gap-y-2 border-b border-line">
+          <nav aria-label="Filtrar perguntas por estado" className="flex gap-5 text-[12px] sm:gap-7">
+            {([['', 'Recentes'], ['unanswered', 'Sem resposta'], ['resolved', 'Resolvidas']] as const).map(([status, label]) => <Link key={status} href={hrefFor({ estado: status })} aria-current={filters.estado === status ? 'page' : undefined} className={`-mb-px border-b-2 pb-3 font-semibold transition-colors ${filters.estado === status ? 'border-accent text-brand' : 'border-transparent text-muted hover:text-brand'}`}>{label}</Link>)}
+          </nav>
+          <span className="pb-3 text-[11px] text-muted">{questions.length === 100 ? 'Mostrando 100 perguntas' : `${questions.length} ${questions.length === 1 ? 'pergunta' : 'perguntas'}`}</span>
+        </div>
+        {(filters.busca || filters.disciplina) && <div className="flex items-center gap-2 py-3 text-[11px] text-muted"><span>Filtros aplicados</span><Link href="/" className="font-semibold text-accent hover:underline">Limpar filtros</Link></div>}
+        {questions.length ? <section aria-label="Lista de perguntas" className="overflow-hidden rounded-xl border border-line bg-white shadow-[0_1px_2px_rgba(15,23,42,.025)]">{questions.map(q => <QuestionCard key={q.id} question={q}/>)}</section> : <div className="rounded-xl border border-line bg-white px-6 py-12 text-center"><BookOpenText className="mx-auto text-[#a4afc0]" size={27}/><h2 className="mt-3 font-display text-[16px] font-bold text-brand">Nenhuma pergunta encontrada</h2><p className="mt-1 text-[13px] text-muted">Tente outra busca ou comece uma conversa.</p><div className="mt-4 flex justify-center gap-3 text-[12px] font-semibold"><Link href="/" className="text-muted hover:text-brand">Limpar filtros</Link><Link href="/perguntas/nova" className="text-accent hover:underline">Fazer pergunta →</Link></div></div>}
+      </div>
+      <aside aria-label="Informações da comunidade" className="space-y-4">
+        <section className="rounded-xl border border-line bg-white p-5 shadow-[0_1px_2px_rgba(15,23,42,.025)]"><div className="flex items-center justify-between"><h2 className="font-display text-[13px] font-bold text-brand">Disciplinas</h2><BookOpenText size={16} className="text-[#8a9ab2]"/></div><p className="mt-1 text-[11px] leading-4 text-muted">Explore dúvidas por área de estudo.</p><div className="mt-4 space-y-0.5">{featuredSubjects.slice(0, 5).map(subject => <Link key={subject.id} href={hrefFor({ disciplina: String(subject.id), busca: '', estado: '' })} className="group flex items-center justify-between gap-2 rounded-md px-2 py-2 text-[12px] text-[#495a70] transition-colors hover:bg-[#f4f7fd] hover:text-accent"><span className="min-w-0 truncate">{subject.name}</span><ArrowRight size={13} className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100"/></Link>)}</div><Link href="/disciplinas" className="mt-3 inline-flex items-center gap-1 text-[11px] font-semibold text-accent hover:underline">Ver todas as disciplinas <ArrowRight size={13}/></Link></section>
+        <section className="rounded-xl border border-line bg-[#f9fafc] p-5"><p className="text-[10px] font-bold uppercase tracking-[.13em] text-muted">{user ? 'Sua participação' : 'Participe da comunidade'}</p>{user ? <><div className="mt-3 flex gap-7"><div><strong className="font-display text-[23px] font-extrabold text-brand">{stats?.questions ?? 0}</strong><p className="text-[11px] text-muted">perguntas</p></div><div><strong className="font-display text-[23px] font-extrabold text-brand">{stats?.answers ?? 0}</strong><p className="text-[11px] text-muted">respostas</p></div></div><Link href="/minha-atividade" className="mt-4 inline-flex items-center gap-1 text-[11px] font-semibold text-accent hover:underline">Ver minha atividade <ArrowRight size={13}/></Link></> : <><p className="mt-2 text-[12px] leading-[1.6] text-[#536178]">Entre para perguntar, responder e acompanhar suas contribuições.</p><Link href="/entrar" className="mt-3 inline-flex items-center gap-1 text-[11px] font-semibold text-accent hover:underline">Entrar ou cadastrar <ArrowRight size={13}/></Link></>}</section>
+      </aside>
+    </div>
+    <p className="mt-8 text-[10px] text-[#8a96a8]">Projeto acadêmico de demonstração, sem vínculo oficial com as instituições citadas.</p>
+  </div>;
+}

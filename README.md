@@ -1,32 +1,52 @@
 # Conecta Academia
 
-Plataforma colaborativa de apoio acadêmico entre estudantes. O primeiro corte prioriza fórum, perguntas, respostas, perfis, reputação, conversas e moderação, com uma fundação PostgreSQL/Supabase preparada para crescer.
+Fórum acadêmico para estudantes, monitores e professores. A versão atual funciona localmente, sem conta em serviço externo e sem custo de API. É um projeto de demonstração, sem vínculo oficial com a Universidade de Fortaleza ou outras instituições citadas nos dados iniciais.
 
-## Stack
+## Executar no VS Code
 
-Next.js App Router, TypeScript, Tailwind CSS, Supabase Auth/Storage/Realtime, PostgreSQL com RLS, Drizzle ORM e Zod. A UI usa componentes pequenos e reutilizáveis; as validações críticas ficam no servidor/domínio.
+Requer **Node.js 24** e npm. No terminal da pasta do projeto:
 
-## Rodando localmente
+```powershell
+npm ci
+npm run dev
+```
 
-1. `npm install`
-2. copie `.env.example` para `.env.local` e preencha as chaves do projeto Supabase;
-3. aplique `supabase/migrations/0001_initial.sql` no SQL Editor do Supabase;
-4. `npm run dev`.
+Abra `http://localhost:3000`. O banco SQLite é criado automaticamente em `data/academia.sqlite` no primeiro acesso. Esse arquivo é persistente e ignorado pelo Git. Não execute `git clean -fdx` se quiser preservar os dados. Para usar outro caminho, defina `ACADEMIA_DB_PATH` em `.env.local`.
 
-Sem credenciais, a interface continua navegável com dados demonstrativos de desenvolvimento; nenhuma informação demonstrativa é usada como persistência de produção.
+No modo de desenvolvimento, use as contas abaixo com a senha `demo12345`:
 
-## Banco e segurança
+| Papel | E-mail |
+| --- | --- |
+| Aluna | `aluna@demo.local` |
+| Monitor verificado | `monitor@demo.local` |
+| Professora verificada | `professora@demo.local` |
+| Coordenação | `admin@demo.local` |
 
-A migration inicial cria as entidades sociais principais, índices, constraints, soft delete e políticas RLS. Operações compostas como aceitar resposta, calcular reputação, conceder badges e criar conversa devem ser implementadas como funções transacionais server-side/RPC antes do uso em produção. `SUPABASE_SERVICE_ROLE_KEY` nunca deve ser exposta ao cliente.
+A mesma conta pode perguntar e responder. Cadastros novos começam como aluno e podem solicitar o perfil de monitor ou professor na página **Perfil**. A coordenação confere o vínculo informado e aprova ou rejeita a solicitação em **Administração**. Os dados iniciais incluem uma faculdade de demonstração, uma escola, quatro cursos/séries e 14 disciplinas. A coordenação pode cadastrar mais instituições, cursos e disciplinas.
 
-## Regras de reputação
+## Fluxos prontos
 
-As regras previstas são centralizadas em eventos: resposta publicada (+1), resposta aceita (+10), avaliação 4 (+2) e avaliação 5 (+3). A pontuação pública pode ser reconstruída a partir de `reputation_events`, evitando incrementos arbitrários no frontend.
+- Cadastro, login por senha, sessão com cookie HTTP only e logout.
+- Catálogo por instituição, curso e disciplina; busca e filtros de perguntas.
+- Publicação de perguntas e respostas persistentes; indicação de solução pelo autor; votos úteis únicos por usuário.
+- Perfil e atividade com perguntas feitas, respostas dadas e recebidas, disciplinas e soluções.
+- Ranking de monitores e professores verificados, calculado a partir das contribuições aprovadas.
+- Triagem por regras locais: linguagem ofensiva e conteúdo sexual explícito são bloqueados; perguntas possivelmente fora do ensino e respostas de entretenimento fora de contexto ficam em revisão. Denúncias são analisadas pela coordenação.
 
-## Próximos passos de produção
+A triagem é intencionalmente simples: não usa IA, não cobra por requisição e **não compreende contexto como uma pessoa**. Pode deixar passar conteúdo inadequado ou sinalizar conteúdo legítimo. Por isso existem revisão humana e denúncias.
 
-- conectar as páginas aos Server Actions usando Supabase SSR e Drizzle;
-- adicionar Storage privado com validação MIME/tamanho e URLs assinadas;
-- habilitar Realtime para `messages` e `notifications`;
-- completar RBAC de moderador/admin e a tela de denúncias;
-- adicionar testes Vitest/Testing Library/Playwright aos fluxos críticos.
+## Verificar
+
+```powershell
+npm test
+npm run typecheck
+npm run build
+```
+
+## Operação e limites
+
+Use `npm run dev` para a apresentação local. Para testar o build com contas fictícias, defina `DEMO_MODE=1` antes de `npm run start`. Fora do modo de demonstração, defina `BOOTSTRAP_ADMIN_EMAIL` e `BOOTSTRAP_ADMIN_PASSWORD` (12 caracteres ou mais) para criar a primeira conta da coordenação. As contas fictícias e suas senhas **não devem ser usadas em uma publicação pública**. O arquivo `.env.example` lista as variáveis opcionais.
+
+SQLite exige disco persistente. Hospedagem sem armazenamento persistente perderá os dados; várias instâncias não devem compartilhar o arquivo pela rede. Esta entrega foi validada para uso local/num único servidor. Antes de publicação pública, faltam confirmação de e-mail, recuperação de senha, limites de tentativas de login, backup, regras de privacidade e uma revisão de dependências.
+
+Os arquivos `supabase/` e `db/schema.ts` pertencem ao planejamento anterior e **não são usados pela versão SQLite atual**. Chat, anexos e notificações em tempo real não foram incluídos no fluxo atual.

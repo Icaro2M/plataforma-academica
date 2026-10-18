@@ -1,0 +1,8 @@
+import Link from 'next/link';
+import { Medal } from 'lucide-react';
+import { getRanking } from '@/lib/store';
+
+export default function RankingPage() {
+  const people = getRanking();
+  return <div className="mx-auto max-w-4xl px-5 py-10"><p className="text-xs font-bold uppercase tracking-[.2em] text-coral">Comunidade</p><h1 className="mt-2 flex items-center gap-2 text-3xl font-black"><Medal className="text-coral"/> Ranking de quem ajuda</h1><p className="mt-2 text-sm text-slate-500">Monitores e professores verificados. A pontuação é calculada pelas contribuições aprovadas.</p><div className="mt-7 overflow-hidden rounded-3xl border border-line bg-white">{people.length ? people.map((person,index) => <Link href={`/pessoas/${person.id}`} key={person.id} className="flex flex-wrap items-center gap-4 border-b border-line p-5 last:border-0 hover:bg-cream"><span className="w-7 text-xl font-black text-coral">{index+1}</span><div className="min-w-0 flex-1"><p className="font-bold">{person.name} <span className="ml-1 rounded-full bg-[#e5f2ef] px-2 py-1 text-[10px] text-teal">{person.role === 'MONITOR' ? 'Monitor' : 'Professor'} verificado</span></p><p className="mt-1 text-xs text-slate-500">{person.institution_name}</p></div><div className="text-right"><p className="font-black text-teal">{person.points} pontos</p><p className="text-xs text-slate-500">{person.answers} respostas · {person.accepted} soluções · {person.useful} úteis</p></div></Link>) : <p className="p-8 text-sm text-slate-500">Ainda não há participantes verificados.</p>}</div><p className="mt-4 text-xs text-slate-400">2 pontos por resposta, 10 por solução aceita e 1 por voto útil. A contagem é calculada no banco, sem edição manual.</p></div>;
+}
