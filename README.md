@@ -31,6 +31,7 @@ A mesma conta pode perguntar e responder. Cadastros novos começam como aluno e 
 - Publicação de perguntas e respostas persistentes; indicação de solução pelo autor; votos úteis únicos por usuário.
 - Perfil e atividade com perguntas feitas, respostas dadas e recebidas, disciplinas e soluções.
 - Ranking de monitores e professores verificados, calculado a partir das contribuições aprovadas.
+- Conversas privadas de estudo com monitores, professores e coordenação verificados, sempre vinculadas a uma disciplina; pedidos de aula podem ser enviados, aceitos ou recusados no chat.
 - Triagem por regras locais: linguagem ofensiva e conteúdo sexual explícito são bloqueados; perguntas possivelmente fora do ensino e respostas de entretenimento fora de contexto ficam em revisão. Denúncias são analisadas pela coordenação.
 
 A triagem é intencionalmente simples: não usa IA, não cobra por requisição e **não compreende contexto como uma pessoa**. Pode deixar passar conteúdo inadequado ou sinalizar conteúdo legítimo. Por isso existem revisão humana e denúncias.
@@ -49,4 +50,4 @@ Use `npm run dev` para a apresentação local. Para testar o build com contas fi
 
 SQLite exige disco persistente. Hospedagem sem armazenamento persistente perderá os dados; várias instâncias não devem compartilhar o arquivo pela rede. Esta entrega foi validada para uso local/num único servidor. Antes de publicação pública, faltam confirmação de e-mail, recuperação de senha, limites de tentativas de login, backup, regras de privacidade e uma revisão de dependências.
 
-Os arquivos `supabase/` e `db/schema.ts` pertencem ao planejamento anterior e **não são usados pela versão SQLite atual**. Chat, anexos e notificações em tempo real não foram incluídos no fluxo atual.
+Os arquivos `supabase/` e `db/schema.ts` pertencem ao planejamento anterior e **não são usados pela versão SQLite atual**. O chat atual atualiza quando a página é recarregada; anexos e notificações em tempo real não foram incluídos.

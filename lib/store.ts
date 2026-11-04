@@ -18,6 +18,10 @@ export type Answer = { id: string; question_id: string; author_id: string; body:
 export type SavedQuestion = Question & { saved_at: string };
 export type FollowedSubject = SubjectSummary & { followed_at: string; follower_count: number };
 export type Notification = { id: string; user_id: string; type: string; actor_id: string | null; actor_name: string | null; entity_type: string | null; entity_id: string | null; title: string; body: string | null; read_at: string | null; created_at: string };
+export type ChatContact = Pick<User, 'id' | 'name' | 'role' | 'verified' | 'course_name' | 'institution_name'>;
+export type ChatConversation = { id: string; title: string; subject_id: number; subject_name: string; subject_code: string; status: 'OPEN' | 'SCHEDULED' | 'CLOSED'; created_by: string; created_at: string; updated_at: string; other_user_id: string; other_user_name: string; other_user_role: Role; other_user_verified: number; last_read_at: string | null; last_message: string | null; last_message_at: string | null; unread_count: number };
+export type ChatMessage = { id: string; conversation_id: string; author_id: string; body: string; status: 'APPROVED' | 'PENDING' | 'REMOVED'; moderation_reason: string | null; created_at: string; author_name: string };
+export type StudyRequest = { id: string; conversation_id: string; requester_id: string; receiver_id: string; proposed_at: string; note: string; status: 'PENDING' | 'ACCEPTED' | 'REJECTED'; reviewed_at: string | null; created_at: string; requester_name: string; receiver_name: string };
 
 const file = process.env.ACADEMIA_DB_PATH ? path.resolve(process.env.ACADEMIA_DB_PATH) : path.join(process.cwd(), 'data', 'academia.sqlite');
 const globalDb = globalThis as typeof globalThis & { academiaDb?: DatabaseConnection };
@@ -53,6 +57,10 @@ function init(db: DatabaseConnection) {
     CREATE TABLE IF NOT EXISTS question_saves (user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, question_id TEXT NOT NULL REFERENCES questions(id) ON DELETE CASCADE, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(user_id,question_id));
     CREATE TABLE IF NOT EXISTS subject_follows (user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, subject_id INTEGER NOT NULL REFERENCES subjects(id) ON DELETE CASCADE, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(user_id,subject_id));
     CREATE TABLE IF NOT EXISTS notifications (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, type TEXT NOT NULL, actor_id TEXT REFERENCES users(id) ON DELETE SET NULL, entity_type TEXT, entity_id TEXT, title TEXT NOT NULL, body TEXT, read_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+    CREATE TABLE IF NOT EXISTS conversations (id TEXT PRIMARY KEY, title TEXT NOT NULL, subject_id INTEGER NOT NULL REFERENCES subjects(id), created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, status TEXT NOT NULL DEFAULT 'OPEN' CHECK(status IN ('OPEN','SCHEDULED','CLOSED')), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+    CREATE TABLE IF NOT EXISTS conversation_members (conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, last_read_at TEXT, joined_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(conversation_id,user_id));
+    CREATE TABLE IF NOT EXISTS chat_messages (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, author_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, body TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'APPROVED' CHECK(status IN ('APPROVED','PENDING','REMOVED')), moderation_reason TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+    CREATE TABLE IF NOT EXISTS study_requests (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, requester_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, receiver_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, proposed_at TEXT NOT NULL, note TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING','ACCEPTED','REJECTED')), reviewed_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
     CREATE UNIQUE INDEX IF NOT EXISTS one_pending_role_request ON role_requests(user_id) WHERE status='PENDING';
     CREATE INDEX IF NOT EXISTS questions_feed_idx ON questions(status,created_at DESC);
     CREATE INDEX IF NOT EXISTS answers_question_idx ON answers(question_id,status);
@@ -61,6 +69,9 @@ function init(db: DatabaseConnection) {
     CREATE INDEX IF NOT EXISTS subject_follows_user_idx ON subject_follows(user_id,created_at DESC);
     CREATE INDEX IF NOT EXISTS notifications_user_idx ON notifications(user_id,read_at,created_at DESC);
     CREATE UNIQUE INDEX IF NOT EXISTS notifications_event_unique ON notifications(user_id,type,entity_id,actor_id);
+    CREATE INDEX IF NOT EXISTS conversation_members_user_idx ON conversation_members(user_id,conversation_id);
+    CREATE INDEX IF NOT EXISTS chat_messages_conversation_idx ON chat_messages(conversation_id,created_at);
+    CREATE INDEX IF NOT EXISTS study_requests_conversation_idx ON study_requests(conversation_id,status,created_at DESC);
   `);
   const count = (db.prepare('SELECT count(*) as count FROM institutions').get() as { count: number }).count;
   if (count) {
@@ -206,6 +217,42 @@ export function getNotifications(userId: string, limit = 50) {
 }
 export function getUnreadNotificationCount(userId: string) {
   return one<{ count: number }>('SELECT count(*) count FROM notifications WHERE user_id=? AND read_at IS NULL', userId)?.count ?? 0;
+}
+export function getChatContacts(userId: string) {
+  return all<ChatContact>(`SELECT u.id,u.name,u.role,u.verified,c.name course_name,i.name institution_name
+    FROM users u LEFT JOIN courses c ON c.id=u.course_id LEFT JOIN institutions i ON i.id=u.institution_id
+    WHERE u.id<>? AND u.role IN ('MONITOR','PROFESSOR','ADMIN') AND (u.verified=1 OR u.role='ADMIN')
+    ORDER BY CASE u.role WHEN 'MONITOR' THEN 0 WHEN 'PROFESSOR' THEN 1 ELSE 2 END,u.name`, userId);
+}
+const conversationSelect = `SELECT c.id,c.title,c.subject_id,s.name subject_name,s.code subject_code,c.status,c.created_by,c.created_at,c.updated_at,
+  other.user_id other_user_id,u.name other_user_name,u.role other_user_role,u.verified other_user_verified,mine.last_read_at,
+  (SELECT body FROM chat_messages cm WHERE cm.conversation_id=c.id AND cm.status='APPROVED' ORDER BY cm.created_at DESC LIMIT 1) last_message,
+  (SELECT max(created_at) FROM chat_messages cm WHERE cm.conversation_id=c.id AND cm.status='APPROVED') last_message_at,
+  (SELECT count(*) FROM chat_messages cm WHERE cm.conversation_id=c.id AND cm.author_id<>? AND cm.status='APPROVED' AND (mine.last_read_at IS NULL OR cm.created_at>mine.last_read_at)) unread_count
+  FROM conversations c JOIN conversation_members mine ON mine.conversation_id=c.id AND mine.user_id=?
+  JOIN conversation_members other ON other.conversation_id=c.id AND other.user_id<>?
+  JOIN users u ON u.id=other.user_id JOIN subjects s ON s.id=c.subject_id`;
+export function getConversations(userId: string) {
+  return all<ChatConversation>(`${conversationSelect} ORDER BY COALESCE(last_message_at,c.updated_at) DESC`, userId, userId, userId);
+}
+export function getConversationForUser(conversationId: string, userId: string) {
+  return one<ChatConversation>(`${conversationSelect} WHERE c.id=?`, userId, userId, userId, conversationId);
+}
+export function getChatMessages(conversationId: string, userId: string) {
+  return all<ChatMessage>(`SELECT cm.*,u.name author_name FROM chat_messages cm JOIN users u ON u.id=cm.author_id
+    WHERE cm.conversation_id=? AND (cm.status='APPROVED' OR cm.author_id=?) ORDER BY cm.created_at ASC`, conversationId, userId);
+}
+export function getStudyRequests(conversationId: string) {
+  return all<StudyRequest>(`SELECT sr.*,requester.name requester_name,receiver.name receiver_name FROM study_requests sr
+    JOIN users requester ON requester.id=sr.requester_id JOIN users receiver ON receiver.id=sr.receiver_id
+    WHERE sr.conversation_id=? ORDER BY sr.created_at DESC`, conversationId);
+}
+export function markConversationRead(conversationId: string, userId: string) {
+  database().prepare('UPDATE conversation_members SET last_read_at=CURRENT_TIMESTAMP WHERE conversation_id=? AND user_id=?').run(conversationId,userId);
+}
+export function getUnreadChatCount(userId: string) {
+  return one<{ count: number }>(`SELECT count(*) count FROM chat_messages cm JOIN conversation_members mine ON mine.conversation_id=cm.conversation_id AND mine.user_id=?
+    WHERE cm.author_id<>? AND cm.status='APPROVED' AND (mine.last_read_at IS NULL OR cm.created_at>mine.last_read_at)`, userId, userId)?.count ?? 0;
 }
 export function createUser(name: string, email: string, password: string, institutionId: number, courseId: number) {
   const id = randomUUID();

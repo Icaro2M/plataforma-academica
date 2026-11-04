@@ -23,8 +23,8 @@ afterAll(() => {
 
 describe('persistência da comunidade acadêmica', () => {
   it('cria as tabelas incrementais sem perder os dados demonstrativos', () => {
-    const tables = store.all<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('question_saves','subject_follows','notifications') ORDER BY name");
-    expect(tables.map(table => table.name)).toEqual(['notifications', 'question_saves', 'subject_follows']);
+    const tables = store.all<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('question_saves','subject_follows','notifications','conversations','conversation_members','chat_messages','study_requests') ORDER BY name");
+    expect(tables.map(table => table.name)).toEqual(['chat_messages', 'conversation_members', 'conversations', 'notifications', 'question_saves', 'study_requests', 'subject_follows']);
     expect(store.countQuestions()).toBe(2);
   });
 
@@ -54,5 +54,20 @@ describe('persistência da comunidade acadêmica', () => {
     expect(store.getUnreadNotificationCount('demo-aluna')).toBe(1);
     store.database().prepare('UPDATE notifications SET read_at=CURRENT_TIMESTAMP WHERE user_id=?').run('demo-aluna');
     expect(store.getUnreadNotificationCount('demo-aluna')).toBe(0);
+  });
+
+  it('mantém conversa acadêmica, leitura e solicitação de aula entre participantes', () => {
+    const db = store.database();
+    db.prepare('INSERT INTO conversations (id,title,subject_id,created_by) VALUES (?,?,?,?)').run('chat-1','Dúvida sobre ponteiros',2,'demo-aluna');
+    db.prepare('INSERT INTO conversation_members (conversation_id,user_id,last_read_at) VALUES (?,?,CURRENT_TIMESTAMP)').run('chat-1','demo-aluna');
+    db.prepare('INSERT INTO conversation_members (conversation_id,user_id) VALUES (?,?)').run('chat-1','demo-monitor');
+    db.prepare("INSERT INTO chat_messages (id,conversation_id,author_id,body,status) VALUES (?,?,?,?, 'APPROVED')").run('chat-message-1','chat-1','demo-aluna','Como posso revisar ponteiros para a prova?');
+    db.prepare('INSERT INTO study_requests (id,conversation_id,requester_id,receiver_id,proposed_at,note) VALUES (?,?,?,?,?,?)').run('study-1','chat-1','demo-aluna','demo-monitor','2026-12-01 15:00:00','Revisar ponteiros e referências');
+    expect(store.getChatContacts('demo-aluna').map(contact => contact.id)).toContain('demo-monitor');
+    expect(store.getConversations('demo-monitor')[0]).toMatchObject({ id: 'chat-1', other_user_id: 'demo-aluna', unread_count: 1 });
+    expect(store.getChatMessages('chat-1','demo-monitor')).toHaveLength(1);
+    expect(store.getStudyRequests('chat-1')[0]).toMatchObject({ id: 'study-1', status: 'PENDING' });
+    store.markConversationRead('chat-1','demo-monitor');
+    expect(store.getUnreadChatCount('demo-monitor')).toBe(0);
   });
 });

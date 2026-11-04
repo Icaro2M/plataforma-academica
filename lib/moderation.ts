@@ -8,14 +8,14 @@ const entertainment = /\b(anime|manga|filme|serie|ficcao|celebridade|futebol|jog
 const academic = /\b(estudo|estudar|disciplina|materia|aula|prova|exercicio|trabalho|pesquisa|analise|interpretacao|conceito|teoria|calculo|equacao|algoritmo|codigo|programacao|historia|geografia|biologia|matematica|literatura|fisica|quimica|educacao|aprender|ensino|professor|monitor|escola|faculdade|universidade|banco de dados|sql|c\+\+)\b/i;
 
 /** Triagem simples para demonstração. Conteúdo sinalizado fica invisível até revisão humana. */
-export function moderateContent(value: string, kind: 'QUESTION' | 'ANSWER'): ModerationResult {
+export function moderateContent(value: string, kind: 'QUESTION' | 'ANSWER' | 'CHAT'): ModerationResult {
   const text = normalize(value);
   if (profanity.test(text)) return { status: 'BLOCKED', reason: 'Linguagem ofensiva detectada.' };
   if (explicit.test(text)) return { status: 'BLOCKED', reason: 'Conteúdo sexual explícito detectado.' };
   if (kind === 'QUESTION' && entertainment.test(text) && !academic.test(text)) {
     return { status: 'PENDING', reason: 'Possível assunto fora do contexto de ensino.' };
   }
-  if (kind === 'ANSWER' && entertainment.test(text) && !academic.test(text)) {
+  if ((kind === 'ANSWER' || kind === 'CHAT') && entertainment.test(text) && !academic.test(text)) {
     return { status: 'PENDING', reason: 'A resposta pode estar fora do contexto da pergunta.' };
   }
   return { status: 'APPROVED', reason: null };

@@ -7,7 +7,7 @@ import { currentUser } from '@/lib/auth';
 import { getNotifications } from '@/lib/store';
 
 const dateLabel = (date: string) => new Date(`${date}Z`).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
-const destination = (type: string, entityId: string | null) => (type === 'ROLE_REQUEST_REVIEWED' ? '/perfil' : entityId ? `/perguntas/${entityId}` : '/notificacoes') as Route;
+const destination = (type: string, entityId: string | null) => (type === 'ROLE_REQUEST_REVIEWED' ? '/perfil' : ['CHAT_MESSAGE','STUDY_SESSION_REQUEST','STUDY_SESSION_REVIEWED'].includes(type) ? '/mensagens' : entityId ? `/perguntas/${entityId}` : '/notificacoes') as Route;
 
 export default async function NotificationsPage() {
   const user = await currentUser();

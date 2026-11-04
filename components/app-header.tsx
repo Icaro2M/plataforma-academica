@@ -7,6 +7,7 @@ import { ChevronRight, Plus, Search } from 'lucide-react';
 const sections: [string, string][] = [
   ['/perguntas/nova', 'Nova pergunta'], ['/perguntas/', 'Pergunta'],
   ['/disciplinas', 'Disciplinas'], ['/ranking', 'Ranking'],
+  ['/mensagens', 'Conversas de estudo'],
   ['/notificacoes', 'Notificações'],
   ['/minha-atividade', 'Minha atividade'], ['/perfil', 'Meu perfil'],
   ['/pessoas/', 'Perfil'], ['/administracao', 'Administração'],

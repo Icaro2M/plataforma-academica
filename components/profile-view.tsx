@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { CheckCircle2, ShieldCheck } from 'lucide-react';
+import { CheckCircle2, MessageCircle, ShieldCheck } from 'lucide-react';
 import { all, getFollowedSubjects, getUserStats, type User } from '@/lib/store';
 import { requestRole } from '@/app/actions';
 
@@ -28,7 +28,7 @@ export function ProfileView({ user, own = false, error, success }: { user: User;
       <div className="flex flex-wrap items-center gap-4">
         <span aria-hidden="true" className="grid h-16 w-16 shrink-0 place-items-center rounded-xl bg-[#e8edf6] text-lg font-black text-ink">{user.name.split(' ').slice(0,2).map(part => part[0]).join('').toUpperCase()}</span>
         <div className="min-w-0 flex-1"><h1 className="text-2xl font-black tracking-tight md:text-3xl">{user.name}</h1><p className="mt-1 text-sm text-slate-500">{user.course_name || 'Curso não informado'} · {user.institution_name || 'Instituição não informada'}</p></div>
-        <span className={`inline-flex w-full items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-bold sm:ml-auto sm:w-auto ${user.verified ? 'bg-[#e5f2ef] text-teal' : 'bg-slate-100 text-slate-600'}`}>{Boolean(user.verified) && <ShieldCheck size={15}/>} {role}{user.verified && user.role !== 'ADMIN' ? ' verificado' : ''}</span>
+        <div className="flex w-full flex-wrap items-center gap-2 sm:ml-auto sm:w-auto"><span className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-bold ${user.verified ? 'bg-[#e5f2ef] text-teal' : 'bg-slate-100 text-slate-600'}`}>{Boolean(user.verified) && <ShieldCheck size={15}/>} {role}{user.verified && user.role !== 'ADMIN' ? ' verificado' : ''}</span>{!own && (user.role === 'MONITOR' || user.role === 'PROFESSOR' || user.role === 'ADMIN') && <Link href={`/mensagens/nova?para=${user.id}`} className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-bold text-white hover:bg-[#2549bd]"><MessageCircle size={14}/> Conversar</Link>}</div>
       </div>
       <div className="mt-6 grid grid-cols-2 gap-3 border-t border-line pt-5 sm:grid-cols-5">{[['Perguntas',stats.questions],['Respostas',stats.answers],['Recebidas',stats.received],['Soluções',stats.accepted],['Votos úteis',stats.useful]].map(([label,count]) => <div key={label} className="rounded-lg bg-slate-50 px-3 py-3"><p className="text-2xl font-black text-ink">{count}</p><p className="text-xs text-slate-500">{label}</p></div>)}</div>
     </section>

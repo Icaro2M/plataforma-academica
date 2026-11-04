@@ -159,6 +159,94 @@ export async function markAllNotificationsRead() {
   redirect('/notificacoes' as Route);
 }
 
+export async function createStudyChat(form: FormData) {
+  const user = await requireUser();
+  const recipientId = value(form,'recipientId');
+  const subjectId = Number(value(form,'subjectId'));
+  const title = value(form,'title');
+  const body = value(form,'body');
+  const recipient = one<{ id: string; name: string; role: string; verified: number }>("SELECT id,name,role,verified FROM users WHERE id=? AND id<>?",recipientId,user.id);
+  const subject = one<{ id: number; name: string }>('SELECT id,name FROM subjects WHERE id=?',subjectId);
+  if (!recipient || !['MONITOR','PROFESSOR','ADMIN'].includes(recipient.role) || (!recipient.verified && recipient.role !== 'ADMIN') || !subject || title.length < 6 || title.length > 120 || body.length < 10 || body.length > 2000) redirect(errorUrl('/mensagens/nova','Escolha um orientador, uma disciplina, um tema de 6 a 120 caracteres e escreva sua dúvida.'));
+  const moderation = moderateContent(`${title} ${body}`,'CHAT');
+  if (moderation.status === 'BLOCKED') redirect(errorUrl('/mensagens/nova',moderation.reason || 'Conteúdo não permitido.'));
+  const conversationId = randomUUID();
+  const messageId = randomUUID();
+  const db = database();
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.prepare('INSERT INTO conversations (id,title,subject_id,created_by) VALUES (?,?,?,?)').run(conversationId,title,subjectId,user.id);
+    db.prepare('INSERT INTO conversation_members (conversation_id,user_id,last_read_at) VALUES (?,?,CURRENT_TIMESTAMP)').run(conversationId,user.id);
+    db.prepare('INSERT INTO conversation_members (conversation_id,user_id) VALUES (?,?)').run(conversationId,recipientId);
+    db.prepare('INSERT INTO chat_messages (id,conversation_id,author_id,body,status,moderation_reason) VALUES (?,?,?,?,?,?)').run(messageId,conversationId,user.id,body,moderation.status,moderation.reason);
+    if (moderation.status === 'APPROVED') createNotification(recipientId,'CHAT_MESSAGE',user.id,'CHAT_MESSAGE',messageId,'Nova conversa de estudo',`${subject.name}: ${title}`);
+    db.exec('COMMIT');
+  } catch (error) { db.exec('ROLLBACK'); throw error; }
+  revalidatePath('/mensagens'); revalidatePath('/notificacoes');
+  redirect(`/mensagens/${conversationId}?success=${encodeURIComponent(moderation.status === 'PENDING' ? 'Mensagem enviada para revisão' : 'Conversa criada')}` as Route);
+}
+
+export async function sendChatMessage(form: FormData) {
+  const user = await requireUser();
+  const conversationId = value(form,'conversationId');
+  const body = value(form,'body');
+  const membership = one<{ other_user_id: string }>(`SELECT other.user_id other_user_id FROM conversation_members mine
+    JOIN conversation_members other ON other.conversation_id=mine.conversation_id AND other.user_id<>mine.user_id
+    WHERE mine.conversation_id=? AND mine.user_id=?`,conversationId,user.id);
+  if (!membership || body.length < 1 || body.length > 2000) redirect(errorUrl(`/mensagens/${conversationId}`,'A mensagem deve ter de 1 a 2.000 caracteres.'));
+  const moderation = moderateContent(body,'CHAT');
+  if (moderation.status === 'BLOCKED') redirect(errorUrl(`/mensagens/${conversationId}`,moderation.reason || 'Conteúdo não permitido.'));
+  const messageId = randomUUID();
+  const db = database();
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.prepare('INSERT INTO chat_messages (id,conversation_id,author_id,body,status,moderation_reason) VALUES (?,?,?,?,?,?)').run(messageId,conversationId,user.id,body,moderation.status,moderation.reason);
+    db.prepare('UPDATE conversations SET updated_at=CURRENT_TIMESTAMP WHERE id=?').run(conversationId);
+    if (moderation.status === 'APPROVED') createNotification(membership.other_user_id,'CHAT_MESSAGE',user.id,'CHAT_MESSAGE',messageId,'Nova mensagem de estudo',body.slice(0,120));
+    db.exec('COMMIT');
+  } catch (error) { db.exec('ROLLBACK'); throw error; }
+  revalidatePath('/mensagens'); revalidatePath(`/mensagens/${conversationId}`); revalidatePath('/notificacoes');
+  redirect(`/mensagens/${conversationId}` as Route);
+}
+
+export async function requestStudySession(form: FormData) {
+  const user = await requireUser();
+  const conversationId = value(form,'conversationId');
+  const proposedAt = value(form,'proposedAt');
+  const note = value(form,'note');
+  const recipient = one<{ other_user_id: string }>(`SELECT other.user_id other_user_id FROM conversation_members mine
+    JOIN conversation_members other ON other.conversation_id=mine.conversation_id AND other.user_id<>mine.user_id
+    WHERE mine.conversation_id=? AND mine.user_id=?`,conversationId,user.id);
+  const date = new Date(proposedAt);
+  if (!recipient || Number.isNaN(date.valueOf()) || date.valueOf() < Date.now() || note.length < 5 || note.length > 500) redirect(errorUrl(`/mensagens/${conversationId}`,'Informe uma data futura e um objetivo de estudo entre 5 e 500 caracteres.'));
+  const requestId = randomUUID();
+  const normalizedDate = date.toISOString().slice(0,19).replace('T',' ');
+  database().prepare('INSERT INTO study_requests (id,conversation_id,requester_id,receiver_id,proposed_at,note) VALUES (?,?,?,?,?,?)').run(requestId,conversationId,user.id,recipient.other_user_id,normalizedDate,note);
+  createNotification(recipient.other_user_id,'STUDY_SESSION_REQUEST',user.id,'STUDY_REQUEST',requestId,'Novo pedido de aula',note);
+  revalidatePath('/mensagens'); revalidatePath(`/mensagens/${conversationId}`); revalidatePath('/notificacoes');
+  redirect(`/mensagens/${conversationId}?success=Pedido+de+aula+enviado` as Route);
+}
+
+export async function reviewStudyRequest(form: FormData) {
+  const user = await requireUser();
+  const requestId = value(form,'requestId');
+  const decision = value(form,'decision');
+  if (!['ACCEPT','REJECT'].includes(decision)) redirect('/mensagens');
+  const request = one<{ conversation_id: string; requester_id: string }>('SELECT conversation_id,requester_id FROM study_requests WHERE id=? AND receiver_id=? AND status=?',requestId,user.id,'PENDING');
+  if (!request) redirect('/mensagens');
+  const status = decision === 'ACCEPT' ? 'ACCEPTED' : 'REJECTED';
+  const db = database();
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.prepare('UPDATE study_requests SET status=?,reviewed_at=CURRENT_TIMESTAMP WHERE id=?').run(status,requestId);
+    if (status === 'ACCEPTED') db.prepare("UPDATE conversations SET status='SCHEDULED',updated_at=CURRENT_TIMESTAMP WHERE id=?").run(request.conversation_id);
+    createNotification(request.requester_id,'STUDY_SESSION_REVIEWED',user.id,'STUDY_REQUEST',requestId,status === 'ACCEPTED' ? 'Seu pedido de aula foi aceito' : 'Seu pedido de aula foi recusado',status === 'ACCEPTED' ? 'Confira a conversa para combinar os detalhes.' : 'Você pode propor outro horário na conversa.');
+    db.exec('COMMIT');
+  } catch (error) { db.exec('ROLLBACK'); throw error; }
+  revalidatePath('/mensagens'); revalidatePath(`/mensagens/${request.conversation_id}`); revalidatePath('/notificacoes');
+  redirect(`/mensagens/${request.conversation_id}` as Route);
+}
+
 export async function createInstitution(form: FormData) {
   await requireAdmin();
   const name = value(form,'name'); const kind = value(form,'kind'); const city = value(form,'city');
