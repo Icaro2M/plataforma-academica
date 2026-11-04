@@ -11,7 +11,7 @@ npm ci
 npm run dev
 ```
 
-Abra `http://localhost:3000`. O banco SQLite é criado automaticamente em `data/academia.sqlite` no primeiro acesso. Esse arquivo é persistente e ignorado pelo Git. Não execute `git clean -fdx` se quiser preservar os dados. Para usar outro caminho, defina `ACADEMIA_DB_PATH` em `.env.local`.
+Abra `http://localhost:3000`. O banco SQLite é criado automaticamente em `data/academia.sqlite` no primeiro acesso. Esse arquivo é persistente e ignorado pelo Git: todas as contas que usam a mesma instância local compartilham perguntas, conversas e pedidos de aula, inclusive após reiniciar o servidor. Não execute `git clean -fdx` se quiser preservar os dados. Para usar outro caminho, defina `ACADEMIA_DB_PATH` em `.env.local`.
 
 No modo de desenvolvimento, use as contas abaixo com a senha `demo12345`:
 
@@ -22,16 +22,16 @@ No modo de desenvolvimento, use as contas abaixo com a senha `demo12345`:
 | Professora verificada | `professora@demo.local` |
 | Coordenação | `admin@demo.local` |
 
-A mesma conta pode perguntar e responder. Cadastros novos começam como aluno e podem solicitar o perfil de monitor ou professor na página **Perfil**. A coordenação confere o vínculo informado e aprova ou rejeita a solicitação em **Administração**. Os dados iniciais incluem uma faculdade de demonstração, uma escola, quatro cursos/séries e 14 disciplinas. A coordenação pode cadastrar mais instituições, cursos e disciplinas.
+A mesma conta pode perguntar e responder. Cadastros novos começam como aluno e podem solicitar o perfil de monitor ou professor na página **Perfil**. A coordenação confere o vínculo informado e aprova ou rejeita a solicitação em **Administração**. Os dados iniciais incluem uma faculdade de demonstração, uma escola, 11 cursos/séries e 49 disciplinas. A coordenação pode cadastrar mais instituições, cursos e disciplinas.
 
 ## Fluxos prontos
 
 - Cadastro, login por senha, sessão com cookie HTTP only e logout.
-- Catálogo por instituição, curso e disciplina; busca e filtros de perguntas.
+- Catálogo por instituição, curso e disciplina, com dez cursos de demonstração da universidade; no envio de pergunta, a pessoa escolhe o curso e vê somente as disciplinas vinculadas a ele.
 - Publicação de perguntas e respostas persistentes; indicação de solução pelo autor; votos úteis únicos por usuário.
 - Perfil e atividade com perguntas feitas, respostas dadas e recebidas, disciplinas e soluções.
 - Ranking de monitores e professores verificados, calculado a partir das contribuições aprovadas.
-- Conversas privadas de estudo com monitores, professores e coordenação verificados, sempre vinculadas a uma disciplina; pedidos de aula podem ser enviados, aceitos ou recusados no chat.
+- Conversas privadas de estudo com monitores, professores e coordenação verificados, sempre vinculadas a uma disciplina; mensagens sem contexto acadêmico são recusadas e pedidos de aula podem ser enviados, aceitos ou recusados no chat.
 - Triagem por regras locais: linguagem ofensiva e conteúdo sexual explícito são bloqueados; perguntas possivelmente fora do ensino e respostas de entretenimento fora de contexto ficam em revisão. Denúncias são analisadas pela coordenação.
 
 A triagem é intencionalmente simples: não usa IA, não cobra por requisição e **não compreende contexto como uma pessoa**. Pode deixar passar conteúdo inadequado ou sinalizar conteúdo legítimo. Por isso existem revisão humana e denúncias.

@@ -40,6 +40,31 @@ export function verifyPassword(password: string, stored: string) {
 
 export function hashToken(token: string) { return createHash('sha256').update(token).digest('hex'); }
 
+function seedUniversityCatalog(db: DatabaseConnection) {
+  const university = db.prepare('SELECT id FROM institutions WHERE name=?').get('Universidade de Fortaleza (demonstração)') as { id: number } | undefined;
+  if (!university) return;
+  const catalog: [string, [string, string][]][] = [
+    ['Ciência da Computação',[['Raciocínio Lógico','RL101'],['Programação','CC102'],['Banco de Dados','CC203'],['Algoritmos','CC104'],['Estruturas de Dados','CC205'],['Engenharia de Software','CC206']]],
+    ['Engenharia',[['Cálculo II','ENG202'],['Álgebra Linear','ENG105'],['Física','ENG106'],['Mecânica dos Sólidos','ENG203'],['Termodinâmica','ENG204']]],
+    ['Administração',[['Estatística','ADM201'],['Matemática Financeira','ADM202'],['Gestão de Pessoas','ADM203'],['Marketing','ADM204'],['Contabilidade Geral','ADM205']]],
+    ['Direito',[['Introdução ao Direito','DIR101'],['Direito Constitucional','DIR102'],['Direito Civil','DIR103'],['Metodologia Jurídica','DIR104']]],
+    ['Medicina',[['Anatomia Humana','MED101'],['Fisiologia','MED102'],['Bioquímica','MED103'],['Saúde Coletiva','MED104']]],
+    ['Psicologia',[['Psicologia Geral','PSI101'],['Neuroanatomia','PSI102'],['Estatística Aplicada','PSI103'],['Ética Profissional','PSI104']]],
+    ['Arquitetura e Urbanismo',[['Desenho Técnico','ARQ101'],['Geometria Descritiva','ARQ102'],['Projeto Arquitetônico','ARQ103'],['Conforto Ambiental','ARQ104']]],
+    ['Odontologia',[['Anatomia de Cabeça e Pescoço','ODO101'],['Histologia','ODO102'],['Bioquímica Oral','ODO103'],['Saúde Bucal Coletiva','ODO104']]],
+    ['Enfermagem',[['Fundamentos de Enfermagem','ENF101'],['Anatomia Humana','ENF102'],['Farmacologia','ENF103'],['Saúde da Família','ENF104']]],
+    ['Publicidade e Propaganda',[['Teoria da Comunicação','PUB101'],['Redação Publicitária','PUB102'],['Fotografia','PUB103'],['Planejamento de Marketing','PUB104']]],
+  ];
+  const insertCourse = db.prepare('INSERT OR IGNORE INTO courses (institution_id,name) VALUES (?,?)');
+  const findCourse = db.prepare('SELECT id FROM courses WHERE institution_id=? AND name=?');
+  const insertSubject = db.prepare('INSERT OR IGNORE INTO subjects (course_id,name,code) VALUES (?,?,?)');
+  for (const [courseName, subjects] of catalog) {
+    insertCourse.run(university.id,courseName);
+    const course = findCourse.get(university.id,courseName) as { id: number };
+    for (const [subjectName, code] of subjects) insertSubject.run(course.id,subjectName,code);
+  }
+}
+
 function init(db: DatabaseConnection) {
   db.exec(`
     PRAGMA foreign_keys = ON;
@@ -75,6 +100,7 @@ function init(db: DatabaseConnection) {
   `);
   const count = (db.prepare('SELECT count(*) as count FROM institutions').get() as { count: number }).count;
   if (count) {
+    seedUniversityCatalog(db);
     if (process.env.NODE_ENV === 'production' && process.env.DEMO_MODE !== '1' && process.env.BOOTSTRAP_ADMIN_EMAIL && process.env.BOOTSTRAP_ADMIN_PASSWORD && process.env.BOOTSTRAP_ADMIN_PASSWORD.length >= 12 && !(db.prepare("SELECT id FROM users WHERE role='ADMIN' LIMIT 1").get())) {
       db.prepare('INSERT INTO users (id,name,email,password_hash,role,verified,institution_id,course_id) VALUES (?,?,?,?,?,?,?,?)').run(randomUUID(),'Coordenação Acadêmica',process.env.BOOTSTRAP_ADMIN_EMAIL,hashPassword(process.env.BOOTSTRAP_ADMIN_PASSWORD),'ADMIN',1,1,1);
     }
@@ -97,6 +123,7 @@ function init(db: DatabaseConnection) {
       [3,'Estatística','ADM201'],[3,'Matemática Financeira','ADM202'],
       [4,'Matemática','EM101'],[4,'Geografia','EM102'],[4,'História','EM103'],[4,'Biologia','EM104'],[4,'Literatura','EM105']
     ].forEach(([courseId,name,code]) => subject.run(courseId,name,code));
+    seedUniversityCatalog(db);
     const user = db.prepare('INSERT INTO users (id,name,email,password_hash,role,verified,institution_id,course_id) VALUES (?,?,?,?,?,?,?,?)');
     const demoMode = process.env.NODE_ENV !== 'production' || process.env.DEMO_MODE === '1';
     if (demoMode) {
@@ -140,7 +167,9 @@ export function getUser(id: string) {
 }
 export function getInstitutions() { return all<Institution>('SELECT * FROM institutions ORDER BY name'); }
 export function getCourses() { return all<Course>('SELECT c.*,i.name institution_name FROM courses c JOIN institutions i ON i.id=c.institution_id ORDER BY i.name,c.name'); }
+export function getCoursesForInstitution(institutionId: number) { return all<Course>('SELECT c.*,i.name institution_name FROM courses c JOIN institutions i ON i.id=c.institution_id WHERE c.institution_id=? ORDER BY c.name',institutionId); }
 export function getSubjects() { return all<Subject>('SELECT s.*,c.name course_name,i.name institution_name FROM subjects s JOIN courses c ON c.id=s.course_id JOIN institutions i ON i.id=c.institution_id ORDER BY i.name,c.name,s.name'); }
+export function getSubjectsForInstitution(institutionId: number) { return all<Subject>('SELECT s.*,c.name course_name,i.name institution_name FROM subjects s JOIN courses c ON c.id=s.course_id JOIN institutions i ON i.id=c.institution_id WHERE c.institution_id=? ORDER BY c.name,s.name',institutionId); }
 export function getSubjectCatalog() {
   return all<SubjectSummary>(`SELECT s.*,c.institution_id,c.name course_name,i.name institution_name,
     (SELECT count(*) FROM questions q WHERE q.subject_id=s.id AND q.status IN ('OPEN','RESOLVED')) question_count,
@@ -222,7 +251,8 @@ export function getChatContacts(userId: string) {
   return all<ChatContact>(`SELECT u.id,u.name,u.role,u.verified,c.name course_name,i.name institution_name
     FROM users u LEFT JOIN courses c ON c.id=u.course_id LEFT JOIN institutions i ON i.id=u.institution_id
     WHERE u.id<>? AND u.role IN ('MONITOR','PROFESSOR','ADMIN') AND (u.verified=1 OR u.role='ADMIN')
-    ORDER BY CASE u.role WHEN 'MONITOR' THEN 0 WHEN 'PROFESSOR' THEN 1 ELSE 2 END,u.name`, userId);
+    AND (u.institution_id=(SELECT institution_id FROM users WHERE id=?) OR u.role='ADMIN')
+    ORDER BY CASE u.role WHEN 'MONITOR' THEN 0 WHEN 'PROFESSOR' THEN 1 ELSE 2 END,u.name`, userId, userId);
 }
 const conversationSelect = `SELECT c.id,c.title,c.subject_id,s.name subject_name,s.code subject_code,c.status,c.created_by,c.created_at,c.updated_at,
   other.user_id other_user_id,u.name other_user_name,u.role other_user_role,u.verified other_user_verified,mine.last_read_at,

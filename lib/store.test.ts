@@ -26,6 +26,8 @@ describe('persistência da comunidade acadêmica', () => {
     const tables = store.all<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('question_saves','subject_follows','notifications','conversations','conversation_members','chat_messages','study_requests') ORDER BY name");
     expect(tables.map(table => table.name)).toEqual(['chat_messages', 'conversation_members', 'conversations', 'notifications', 'question_saves', 'study_requests', 'subject_follows']);
     expect(store.countQuestions()).toBe(2);
+    expect(store.getCoursesForInstitution(1).map(course => course.name)).toEqual(expect.arrayContaining(['Ciência da Computação','Direito','Medicina','Psicologia']));
+    expect(store.getSubjectsForInstitution(1).filter(subject => subject.course_name === 'Direito').map(subject => subject.name)).toEqual(expect.arrayContaining(['Direito Constitucional','Direito Civil']));
   });
 
   it('pagina perguntas preservando filtros reais', () => {
@@ -69,5 +71,14 @@ describe('persistência da comunidade acadêmica', () => {
     expect(store.getStudyRequests('chat-1')[0]).toMatchObject({ id: 'study-1', status: 'PENDING' });
     store.markConversationRead('chat-1','demo-monitor');
     expect(store.getUnreadChatCount('demo-monitor')).toBe(0);
+  });
+
+  it('mantém os registros ao fechar e reabrir o banco SQLite', () => {
+    const db = store.database();
+    db.prepare('INSERT INTO question_saves (user_id,question_id) VALUES (?,?)').run('demo-monitor','demo-q2');
+    db.close();
+    delete (globalThis as typeof globalThis & { academiaDb?: unknown }).academiaDb;
+    expect(store.isQuestionSaved('demo-monitor','demo-q2')).toBe(true);
+    expect(store.getConversations('demo-aluna').map(conversation => conversation.id)).toContain('chat-1');
   });
 });

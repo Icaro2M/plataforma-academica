@@ -5,7 +5,7 @@ import { redirect } from 'next/navigation';
 import type { Route } from 'next';
 import { currentUser, endSession, startSession } from '@/lib/auth';
 import { createNotification, database, getQuestion, getUser, one, createUser, verifyPassword } from '@/lib/store';
-import { moderateContent } from '@/lib/moderation';
+import { isStudyChatContent, moderateContent } from '@/lib/moderation';
 
 const value = (form: FormData, key: string) => String(form.get(key) || '').trim();
 const errorUrl = (path: string, message: string) => `${path}?error=${encodeURIComponent(message)}` as Route;
@@ -42,8 +42,9 @@ export async function createQuestion(form: FormData) {
   const title = value(form,'title');
   const body = value(form,'body');
   const subjectId = Number(value(form,'subjectId'));
-  const subject = one<{id:number}>('SELECT id FROM subjects WHERE id=?',subjectId);
-  if (title.length < 12 || title.length > 140 || body.length < 30 || body.length > 10000 || !subject) redirect(errorUrl('/perguntas/nova','Preencha título (12 a 140 caracteres), descrição (30 a 10.000) e disciplina.'));
+  const courseId = Number(value(form,'courseId'));
+  const subject = one<{id:number}>('SELECT s.id FROM subjects s JOIN courses c ON c.id=s.course_id WHERE s.id=? AND s.course_id=? AND c.institution_id=?',subjectId,courseId,user.institution_id);
+  if (title.length < 12 || title.length > 140 || body.length < 30 || body.length > 10000 || !subject) redirect(errorUrl('/perguntas/nova','Escolha um curso e uma disciplina correspondente à sua instituição.'));
   const moderation = moderateContent(`${title} ${body}`,'QUESTION');
   if (moderation.status === 'BLOCKED') redirect(errorUrl('/perguntas/nova',moderation.reason || 'Conteúdo não permitido.'));
   const id = randomUUID();
@@ -166,8 +167,9 @@ export async function createStudyChat(form: FormData) {
   const title = value(form,'title');
   const body = value(form,'body');
   const recipient = one<{ id: string; name: string; role: string; verified: number }>("SELECT id,name,role,verified FROM users WHERE id=? AND id<>?",recipientId,user.id);
-  const subject = one<{ id: number; name: string }>('SELECT id,name FROM subjects WHERE id=?',subjectId);
+  const subject = one<{ id: number; name: string }>('SELECT s.id,s.name FROM subjects s JOIN courses c ON c.id=s.course_id WHERE s.id=? AND c.institution_id=?',subjectId,user.institution_id);
   if (!recipient || !['MONITOR','PROFESSOR','ADMIN'].includes(recipient.role) || (!recipient.verified && recipient.role !== 'ADMIN') || !subject || title.length < 6 || title.length > 120 || body.length < 10 || body.length > 2000) redirect(errorUrl('/mensagens/nova','Escolha um orientador, uma disciplina, um tema de 6 a 120 caracteres e escreva sua dúvida.'));
+  if (!isStudyChatContent(`${title} ${body}`,subject.name)) redirect(errorUrl('/mensagens/nova','O chat é exclusivo para dúvidas, aulas e assuntos vinculados à disciplina selecionada.'));
   const moderation = moderateContent(`${title} ${body}`,'CHAT');
   if (moderation.status === 'BLOCKED') redirect(errorUrl('/mensagens/nova',moderation.reason || 'Conteúdo não permitido.'));
   const conversationId = randomUUID();
@@ -190,10 +192,12 @@ export async function sendChatMessage(form: FormData) {
   const user = await requireUser();
   const conversationId = value(form,'conversationId');
   const body = value(form,'body');
-  const membership = one<{ other_user_id: string }>(`SELECT other.user_id other_user_id FROM conversation_members mine
+  const membership = one<{ other_user_id: string; subject_name: string }>(`SELECT other.user_id other_user_id,s.name subject_name FROM conversation_members mine
     JOIN conversation_members other ON other.conversation_id=mine.conversation_id AND other.user_id<>mine.user_id
+    JOIN conversations c ON c.id=mine.conversation_id JOIN subjects s ON s.id=c.subject_id
     WHERE mine.conversation_id=? AND mine.user_id=?`,conversationId,user.id);
   if (!membership || body.length < 1 || body.length > 2000) redirect(errorUrl(`/mensagens/${conversationId}`,'A mensagem deve ter de 1 a 2.000 caracteres.'));
+  if (!isStudyChatContent(body,membership.subject_name)) redirect(errorUrl(`/mensagens/${conversationId}`,'O chat aceita apenas mensagens ligadas à disciplina e ao estudo.'));
   const moderation = moderateContent(body,'CHAT');
   if (moderation.status === 'BLOCKED') redirect(errorUrl(`/mensagens/${conversationId}`,moderation.reason || 'Conteúdo não permitido.'));
   const messageId = randomUUID();

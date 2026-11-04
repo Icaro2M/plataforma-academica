@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { moderateContent } from './moderation';
+import { isStudyChatContent, moderateContent } from './moderation';
 
 describe('triagem acadêmica básica', () => {
   it('permite discussão educacional de filmes e anime', () => {
@@ -14,5 +14,11 @@ describe('triagem acadêmica básica', () => {
   });
   it('permite contexto legítimo de biologia', () => {
     expect(moderateContent('Como funciona a reprodução sexual em biologia?', 'QUESTION').status).toBe('APPROVED');
+  });
+  it('restringe chat a contexto de estudo ou confirmação curta', () => {
+    expect(isStudyChatContent('Quero revisar exercícios de ponteiros antes da prova.','Programação')).toBe(true);
+    expect(isStudyChatContent('Obrigado!','Programação')).toBe(true);
+    expect(isStudyChatContent('Qual filme você gosta?','Programação')).toBe(false);
+    expect(moderateContent('Vamos falar de anime hoje?', 'CHAT').status).toBe('BLOCKED');
   });
 });
