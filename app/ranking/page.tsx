@@ -4,9 +4,9 @@ import { getInstitutions, getRanking } from '@/lib/store';
 
 export default async function RankingPage({ searchParams }: { searchParams: Promise<{ instituicao?: string }> }) {
   const { instituicao } = await searchParams;
-  const institutions = getInstitutions();
+  const institutions = await getInstitutions();
   const institutionId = institutions.find(item => String(item.id) === instituicao)?.id;
-  const people = getRanking(institutionId);
+  const people = await getRanking(institutionId);
   return <div className="mx-auto max-w-5xl px-5 py-8 md:px-10">
     <p className="text-xs font-bold uppercase tracking-[.16em] text-coral">Comunidade</p>
     <h1 className="mt-2 flex items-center gap-2 text-3xl font-black tracking-tight"><Medal size={28} className="shrink-0 text-coral"/> Ranking de quem ajuda</h1>

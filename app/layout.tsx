@@ -11,7 +11,8 @@ export const dynamic = 'force-dynamic';
 
 export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   const user = await currentUser();
-  const unreadNotifications = user ? getUnreadNotificationCount(user.id) : 0;
-  const unreadChats = user ? getUnreadChatCount(user.id) : 0;
+  const [unreadNotifications, unreadChats] = user
+    ? await Promise.all([getUnreadNotificationCount(user.id), getUnreadChatCount(user.id)])
+    : [0, 0];
   return <html lang="pt-BR"><body><div className="min-h-screen lg:flex"><Sidebar user={user} unreadNotifications={unreadNotifications} unreadChats={unreadChats}/><div className="min-w-0 flex-1"><AppHeader/><main id="conteudo" className="min-w-0">{children}</main></div></div></body></html>;
 }

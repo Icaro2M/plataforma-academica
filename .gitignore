@@ -7,3 +7,5 @@ dist
 data/
 *.tsbuildinfo
 work/
+.npm-cache/
+.vercel

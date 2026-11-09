@@ -1,6 +1,6 @@
 # Conecta Academia
 
-Fórum acadêmico para estudantes, monitores e professores. A versão atual funciona localmente, sem conta em serviço externo e sem custo de API. É um projeto de demonstração, sem vínculo oficial com a Universidade de Fortaleza ou outras instituições citadas nos dados iniciais.
+Fórum acadêmico para estudantes, monitores e professores. A aplicação usa libSQL local no desenvolvimento e Turso no beta remoto, sem API paga. É um projeto acadêmico independente, sem vínculo oficial com a Universidade de Fortaleza.
 
 ## Executar no VS Code
 
@@ -11,7 +11,7 @@ npm ci
 npm run dev
 ```
 
-Abra `http://localhost:3000`. O banco SQLite é criado automaticamente em `data/academia.sqlite` no primeiro acesso. Esse arquivo é persistente e ignorado pelo Git: todas as contas que usam a mesma instância local compartilham perguntas, conversas e pedidos de aula, inclusive após reiniciar o servidor. Não execute `git clean -fdx` se quiser preservar os dados. Para usar outro caminho, defina `ACADEMIA_DB_PATH` em `.env.local`.
+Abra `http://localhost:3000`. O banco libSQL local é criado automaticamente em `data/academia.libsql` no primeiro acesso. Esse arquivo é persistente e ignorado pelo Git. Para usar outro caminho, defina `ACADEMIA_DB_PATH` em `.env.local`.
 
 No modo de desenvolvimento, use as contas abaixo com a senha `demo12345`:
 
@@ -46,8 +46,18 @@ npm run build
 
 ## Operação e limites
 
-Use `npm run dev` para a apresentação local. Para testar o build com contas fictícias, defina `DEMO_MODE=1` antes de `npm run start`. Fora do modo de demonstração, defina `BOOTSTRAP_ADMIN_EMAIL` e `BOOTSTRAP_ADMIN_PASSWORD` (12 caracteres ou mais) para criar a primeira conta da coordenação. As contas fictícias e suas senhas **não devem ser usadas em uma publicação pública**. O arquivo `.env.example` lista as variáveis opcionais.
+Use `npm run dev` para a apresentação local. Para testar o build com contas fictícias, defina `DEMO_MODE=1` antes de `npm run start`. As contas fictícias e suas senhas **não devem ser usadas em uma publicação pública**. O arquivo `.env.example` lista as variáveis locais e remotas.
 
-SQLite exige disco persistente. Hospedagem sem armazenamento persistente perderá os dados; várias instâncias não devem compartilhar o arquivo pela rede. Esta entrega foi validada para uso local/num único servidor. Antes de publicação pública, faltam confirmação de e-mail, recuperação de senha, limites de tentativas de login, backup, regras de privacidade e uma revisão de dependências.
+No beta remoto, todas as instâncias acessam o mesmo banco Turso por `TURSO_DATABASE_URL` e `TURSO_AUTH_TOKEN`. Antes de uma abertura ampla, ainda faltam confirmação de e-mail, recuperação de senha, limites distribuídos de tentativas de login e política de privacidade.
 
-Os arquivos `supabase/` e `db/schema.ts` pertencem ao planejamento anterior e **não são usados pela versão SQLite atual**. O chat atual atualiza quando a página é recarregada; anexos e notificações em tempo real não foram incluídos.
+Os arquivos `supabase/` e `db/schema.ts` pertencem ao planejamento anterior e **não são usados pela versão libSQL atual**. O chat atual atualiza quando a página é recarregada; anexos e notificações em tempo real não foram incluídos.
+
+## Solicitar disciplina
+
+Na página **Disciplinas**, uma pessoa autenticada pode solicitar uma matéria ausente para um dos cursos da sua instituição. A plataforma compara o nome normalizado dentro do curso e impede solicitações pendentes duplicadas. A coordenação aprova ou rejeita em **Administração**; ao aprovar, informa ou confirma o código e a disciplina entra no catálogo automaticamente.
+
+## Beta remoto
+
+O deploy ativo usa **Vercel Hobby + Turso Free**. Configure `TURSO_DATABASE_URL` e `TURSO_AUTH_TOKEN` como segredos da Vercel; nunca os adicione ao Git. O roteiro está em [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md), e os testes de aceitação em [docs/BETA_TESTING.md](docs/BETA_TESTING.md).
+
+Não publique contas demonstrativas, `DEMO_MODE` ou senhas no ambiente público. O seed remoto cria somente catálogo acadêmico.

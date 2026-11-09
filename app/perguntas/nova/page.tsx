@@ -8,8 +8,9 @@ export default async function NewQuestionPage({ searchParams }: { searchParams: 
   const user = await currentUser();
   if (!user || !user.institution_id) redirect('/entrar');
   const { error, disciplina } = await searchParams;
-  const courses = getCoursesForInstitution(user.institution_id).map(({ id, name }) => ({ id, name }));
-  const subjects = getSubjectsForInstitution(user.institution_id).map(({ id, course_id, name, course_name, institution_name }) => ({ id, course_id, name, course_name, institution_name }));
+  const [courseRows, subjectRows] = await Promise.all([getCoursesForInstitution(user.institution_id), getSubjectsForInstitution(user.institution_id)]);
+  const courses = courseRows.map(({ id, name }) => ({ id, name }));
+  const subjects = subjectRows.map(({ id, course_id, name, course_name, institution_name }) => ({ id, course_id, name, course_name, institution_name }));
   const selectedSubject = subjects.some(subject => String(subject.id) === disciplina) ? disciplina! : '';
   return <div className="mx-auto max-w-3xl px-5 py-8 md:py-10">
     <Link href="/" className="text-sm font-semibold text-slate-500">← Voltar ao fórum</Link>

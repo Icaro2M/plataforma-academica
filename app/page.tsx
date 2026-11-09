@@ -16,16 +16,16 @@ export default async function ForumPage({ searchParams }: { searchParams: Promis
     estado: raw.estado === 'unanswered' || raw.estado === 'resolved' ? raw.estado : '',
   };
   const user = await currentUser();
-  const subjects = getSubjects();
+  const subjects = await getSubjects();
   const questionFilters = { search: filters.busca, subjectId: Number(filters.disciplina) || undefined, status: filters.estado };
-  const totalQuestions = countQuestions(questionFilters);
+  const totalQuestions = await countQuestions(questionFilters);
   const pageSize = 10;
   const totalPages = Math.max(1, Math.ceil(totalQuestions / pageSize));
   const requestedPage = Number.parseInt(typeof raw.pagina === 'string' ? raw.pagina : '1', 10);
   const page = Math.min(totalPages, Number.isSafeInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1);
-  const questions = getQuestions({ ...questionFilters, limit: pageSize, offset: (page - 1) * pageSize });
-  const featuredSubjects = getSubjectCatalog().sort((a, b) => b.question_count - a.question_count);
-  const stats = user ? getUserStats(user.id) : null;
+  const questions = await getQuestions({ ...questionFilters, limit: pageSize, offset: (page - 1) * pageSize });
+  const featuredSubjects = (await getSubjectCatalog()).sort((a, b) => b.question_count - a.question_count);
+  const stats = user ? await getUserStats(user.id) : null;
   const hrefFor = (change: Partial<typeof filters>) => {
     const next = { ...filters, ...change };
     const params = new URLSearchParams();

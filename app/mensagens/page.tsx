@@ -9,7 +9,7 @@ const dateLabel = (date: string | null) => date ? new Date(`${date}Z`).toLocaleS
 export default async function MessagesPage() {
   const user = await currentUser();
   if (!user) redirect('/entrar');
-  const conversations = getConversations(user.id);
+  const conversations = await getConversations(user.id);
   return <div className="mx-auto max-w-5xl px-5 py-8 md:px-10">
     <div className="flex flex-wrap items-end justify-between gap-4">
       <div><p className="text-xs font-bold uppercase tracking-[.16em] text-coral">Apoio acadêmico</p><h1 className="mt-2 flex items-center gap-2 text-3xl font-black tracking-tight"><MessageCircle className="text-accent" size={28}/> Conversas de estudo</h1><p className="mt-2 max-w-2xl text-sm text-slate-500">Converse com monitores e professores sobre uma disciplina. Use o chat para tirar dúvidas e combinar uma aula.</p></div>

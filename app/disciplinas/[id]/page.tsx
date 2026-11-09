@@ -15,22 +15,22 @@ export default async function SubjectPage({ params, searchParams }: { params: Pr
   const { id } = await params;
   const subjectId = Number(id);
   if (!Number.isSafeInteger(subjectId) || subjectId < 1) notFound();
-  const subject = getSubjectCatalog().find(item => item.id === subjectId);
+  const subject = (await getSubjectCatalog()).find(item => item.id === subjectId);
   if (!subject) notFound();
   const raw = await searchParams;
   const search = typeof raw.busca === 'string' ? raw.busca.trim().slice(0, 100) : '';
   const status = raw.estado === 'unanswered' || raw.estado === 'resolved' ? raw.estado : '';
   const questionFilters = { subjectId, search, status };
-  const totalQuestions = countQuestions(questionFilters);
+  const totalQuestions = await countQuestions(questionFilters);
   const pageSize = 10;
   const totalPages = Math.max(1, Math.ceil(totalQuestions / pageSize));
   const requestedPage = Number.parseInt(typeof raw.pagina === 'string' ? raw.pagina : '1', 10);
   const page = Math.min(totalPages, Number.isSafeInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1);
-  const questions = getQuestions({ ...questionFilters, limit: pageSize, offset: (page - 1) * pageSize });
-  const counts = getSubjectCounts(subjectId);
+  const questions = await getQuestions({ ...questionFilters, limit: pageSize, offset: (page - 1) * pageSize });
+  const counts = await getSubjectCounts(subjectId);
   const user = await currentUser();
-  const following = user ? isSubjectFollowed(user.id, subjectId) : false;
-  const followerCount = getSubjectFollowerCount(subjectId);
+  const following = user ? await isSubjectFollowed(user.id, subjectId) : false;
+  const followerCount = await getSubjectFollowerCount(subjectId);
   const statusHref = (next: string) => {
     const query = new URLSearchParams();
     if (search) query.set('busca', search);

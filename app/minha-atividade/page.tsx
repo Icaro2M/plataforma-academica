@@ -3,7 +3,8 @@ import { redirect } from 'next/navigation';
 import { Bookmark, BookOpenText, CheckCircle2, MessageCircle, MessageSquareText } from 'lucide-react';
 import { toggleSaveQuestion, toggleSubjectFollow } from '@/app/actions';
 import { currentUser } from '@/lib/auth';
-import { all, getFollowedSubjects, getSavedQuestions, getUserStats } from '@/lib/store';
+import { getFollowedSubjects, getSavedQuestions, getUserStats } from '@/lib/store';
+import { all } from '@/lib/db';
 import { SubjectSymbol } from '@/components/subject-symbol';
 
 type Activity = { id: string; question_id: string; title: string; subject_name: string; status: string; question_status: string; accepted: number; created_at: string };
@@ -17,11 +18,12 @@ export default async function ActivityPage({ searchParams }: { searchParams: Pro
   const { aba, estado } = await searchParams;
   const activeTab: TabId = aba === 'respostas' || aba === 'salvas' || aba === 'disciplinas' ? aba : 'perguntas';
   const activeStatus = ['todos','publicados','revisao','resolvidos'].includes(estado || '') ? estado! : 'todos';
-  const stats = getUserStats(user.id);
-  const asked = all<Activity>(`SELECT q.id,q.id question_id,q.title,s.name subject_name,q.status,q.status question_status,(q.status='RESOLVED') accepted,q.created_at FROM questions q JOIN subjects s ON s.id=q.subject_id WHERE q.author_id=? ORDER BY q.created_at DESC`, user.id);
-  const answered = all<Activity>(`SELECT a.id,a.question_id,q.title,s.name subject_name,a.status,q.status question_status,(q.accepted_answer_id=a.id) accepted,a.created_at FROM answers a JOIN questions q ON q.id=a.question_id JOIN subjects s ON s.id=q.subject_id WHERE a.author_id=? ORDER BY a.created_at DESC`, user.id);
-  const saved = getSavedQuestions(user.id);
-  const followed = getFollowedSubjects(user.id);
+  const [stats, asked, answered, saved, followed] = await Promise.all([
+    getUserStats(user.id),
+    all<Activity>(`SELECT q.id,q.id question_id,q.title,s.name subject_name,q.status,q.status question_status,(q.status='RESOLVED') accepted,q.created_at FROM questions q JOIN subjects s ON s.id=q.subject_id WHERE q.author_id=? ORDER BY q.created_at DESC`, user.id),
+    all<Activity>(`SELECT a.id,a.question_id,q.title,s.name subject_name,a.status,q.status question_status,(q.accepted_answer_id=a.id) accepted,a.created_at FROM answers a JOIN questions q ON q.id=a.question_id JOIN subjects s ON s.id=q.subject_id WHERE a.author_id=? ORDER BY a.created_at DESC`, user.id),
+    getSavedQuestions(user.id), getFollowedSubjects(user.id),
+  ]);
   const records = (activeTab === 'perguntas' ? asked : activeTab === 'respostas' ? answered : []).filter(item => activeStatus === 'todos' || (activeStatus === 'revisao' && item.status === 'PENDING') || (activeStatus === 'publicados' && ['OPEN','APPROVED'].includes(item.status)) || (activeStatus === 'resolvidos' && Boolean(item.accepted)));
   const tabs = [{ id: 'perguntas' as const, label: 'Minhas perguntas', count: asked.length, icon: MessageSquareText }, { id: 'respostas' as const, label: 'Minhas respostas', count: answered.length, icon: MessageCircle }, { id: 'salvas' as const, label: 'Salvas', count: saved.length, icon: Bookmark }, { id: 'disciplinas' as const, label: 'Acompanhadas', count: followed.length, icon: BookOpenText }];
   const filters = [{ id: 'todos', label: 'Todos' }, { id: 'publicados', label: 'Publicados' }, { id: 'revisao', label: 'Em revisão' }, { id: 'resolvidos', label: 'Soluções' }];

@@ -23,17 +23,22 @@ export function QuestionComposer({ courses, subjects, selectedSubject, error }: 
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
+    let saved: { title?: string; subjectId?: string; body?: string } | null = null;
     try {
-      const saved = JSON.parse(sessionStorage.getItem(draftKey) || 'null') as { title?: string; subjectId?: string; body?: string } | null;
-      if (saved) {
-        setTitle(saved.title || '');
-        const selected = subjects.find(subject => String(subject.id) === selectedSubject || String(subject.id) === saved.subjectId);
-        setCourseId(selected ? String(selected.course_id) : '');
-        setSubjectId(selectedSubject || saved.subjectId || '');
-        setBody(saved.body || '');
-      }
+      saved = JSON.parse(sessionStorage.getItem(draftKey) || 'null') as { title?: string; subjectId?: string; body?: string } | null;
     } catch { /* Rascunho inválido é ignorado. */ }
-    setReady(true);
+    const restoredDraft = saved;
+    const timer = window.setTimeout(() => {
+      if (restoredDraft) {
+        setTitle(restoredDraft.title || '');
+        const selected = subjects.find(subject => String(subject.id) === selectedSubject || String(subject.id) === restoredDraft.subjectId);
+        setCourseId(selected ? String(selected.course_id) : '');
+        setSubjectId(selectedSubject || restoredDraft.subjectId || '');
+        setBody(restoredDraft.body || '');
+      }
+      setReady(true);
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [selectedSubject, subjects]);
 
   useEffect(() => {

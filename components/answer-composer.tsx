@@ -15,9 +15,10 @@ export function AnswerComposer({ questionId, answered }: { questionId: string; a
   const [body, setBody] = useState('');
   const [ready, setReady] = useState(false);
   useEffect(() => {
+    const savedDraft = answered ? '' : sessionStorage.getItem(key) || '';
     if (answered) sessionStorage.removeItem(key);
-    else setBody(sessionStorage.getItem(key) || '');
-    setReady(true);
+    const timer = window.setTimeout(() => { setBody(savedDraft); setReady(true); }, 0);
+    return () => window.clearTimeout(timer);
   }, [answered, key]);
   useEffect(() => { if (ready && !answered) sessionStorage.setItem(key, body); }, [body, ready, answered, key]);
   return <form action={createAnswer} className="mt-8 rounded-xl border border-line bg-white p-5 md:p-6">

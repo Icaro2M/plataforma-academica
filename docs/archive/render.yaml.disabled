@@ -1,0 +1,19 @@
+# Configuração histórica, mantida apenas como referência.
+# O deploy ativo usa Vercel Hobby + Turso Free e não usa este Blueprint.
+services:
+  - type: web
+    name: conecta-academia-beta
+    runtime: docker
+    plan: 0.5c-512mb
+    healthCheckPath: /
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "10000"
+      - key: ACADEMIA_DB_PATH
+        value: /app/data/academia.sqlite
+    disk:
+      name: conecta-academia-data
+      mountPath: /app/data
+      sizeGB: 1

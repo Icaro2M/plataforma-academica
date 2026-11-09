@@ -12,7 +12,7 @@ const destination = (type: string, entityId: string | null) => (type === 'ROLE_R
 export default async function NotificationsPage() {
   const user = await currentUser();
   if (!user) redirect('/entrar');
-  const notifications = getNotifications(user.id);
+  const notifications = await getNotifications(user.id);
   const unread = notifications.filter(item => !item.read_at).length;
 
   return <div className="mx-auto max-w-4xl px-5 py-8 md:px-10">

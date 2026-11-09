@@ -1,11 +1,6 @@
 import 'server-only';
-import type { DatabaseSync as DatabaseConnection } from 'node:sqlite';
-import { createRequire } from 'node:module';
-import { randomUUID, scryptSync, timingSafeEqual, createHash } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
-import path from 'node:path';
-
-const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as { DatabaseSync: new (path: string) => DatabaseConnection };
+import { createHash, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
+import { all, execute, one } from './db';
 
 export type Role = 'STUDENT' | 'MONITOR' | 'PROFESSOR' | 'ADMIN';
 export type User = { id: string; name: string; email: string; role: Role; verified: number; institution_id: number | null; course_id: number | null; institution_name?: string | null; course_name?: string | null; created_at: string };
@@ -22,14 +17,9 @@ export type ChatContact = Pick<User, 'id' | 'name' | 'role' | 'verified' | 'cour
 export type ChatConversation = { id: string; title: string; subject_id: number; subject_name: string; subject_code: string; status: 'OPEN' | 'SCHEDULED' | 'CLOSED'; created_by: string; created_at: string; updated_at: string; other_user_id: string; other_user_name: string; other_user_role: Role; other_user_verified: number; last_read_at: string | null; last_message: string | null; last_message_at: string | null; unread_count: number };
 export type ChatMessage = { id: string; conversation_id: string; author_id: string; body: string; status: 'APPROVED' | 'PENDING' | 'REMOVED'; moderation_reason: string | null; created_at: string; author_name: string };
 export type StudyRequest = { id: string; conversation_id: string; requester_id: string; receiver_id: string; proposed_at: string; note: string; status: 'PENDING' | 'ACCEPTED' | 'REJECTED'; reviewed_at: string | null; created_at: string; requester_name: string; receiver_name: string };
+export type SubjectRequest = { id: string; requester_id: string; institution_id: number; course_id: number; name: string; normalized_name: string; code: string | null; justification: string | null; status: 'PENDING' | 'APPROVED' | 'REJECTED'; review_reason: string | null; reviewed_at: string | null; created_at: string; requester_name?: string; course_name?: string; institution_name?: string };
 
-const file = process.env.ACADEMIA_DB_PATH ? path.resolve(process.env.ACADEMIA_DB_PATH) : path.join(process.cwd(), 'data', 'academia.sqlite');
-const globalDb = globalThis as typeof globalThis & { academiaDb?: DatabaseConnection };
-
-function hashPassword(password: string, salt = randomUUID()) {
-  return `${salt}:${scryptSync(password, salt, 64).toString('hex')}`;
-}
-
+function hashPassword(password: string, salt = randomUUID()) { return `${salt}:${scryptSync(password, salt, 64).toString('hex')}`; }
 export function verifyPassword(password: string, stored: string) {
   const [salt, original] = stored.split(':');
   if (!salt || !original) return false;
@@ -37,154 +27,19 @@ export function verifyPassword(password: string, stored: string) {
   const expected = Buffer.from(original, 'hex');
   return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
-
 export function hashToken(token: string) { return createHash('sha256').update(token).digest('hex'); }
 
-function seedUniversityCatalog(db: DatabaseConnection) {
-  const university = db.prepare('SELECT id FROM institutions WHERE name=?').get('Universidade de Fortaleza (demonstração)') as { id: number } | undefined;
-  if (!university) return;
-  const catalog: [string, [string, string][]][] = [
-    ['Ciência da Computação',[['Raciocínio Lógico','RL101'],['Programação','CC102'],['Banco de Dados','CC203'],['Algoritmos','CC104'],['Estruturas de Dados','CC205'],['Engenharia de Software','CC206']]],
-    ['Engenharia',[['Cálculo II','ENG202'],['Álgebra Linear','ENG105'],['Física','ENG106'],['Mecânica dos Sólidos','ENG203'],['Termodinâmica','ENG204']]],
-    ['Administração',[['Estatística','ADM201'],['Matemática Financeira','ADM202'],['Gestão de Pessoas','ADM203'],['Marketing','ADM204'],['Contabilidade Geral','ADM205']]],
-    ['Direito',[['Introdução ao Direito','DIR101'],['Direito Constitucional','DIR102'],['Direito Civil','DIR103'],['Metodologia Jurídica','DIR104']]],
-    ['Medicina',[['Anatomia Humana','MED101'],['Fisiologia','MED102'],['Bioquímica','MED103'],['Saúde Coletiva','MED104']]],
-    ['Psicologia',[['Psicologia Geral','PSI101'],['Neuroanatomia','PSI102'],['Estatística Aplicada','PSI103'],['Ética Profissional','PSI104']]],
-    ['Arquitetura e Urbanismo',[['Desenho Técnico','ARQ101'],['Geometria Descritiva','ARQ102'],['Projeto Arquitetônico','ARQ103'],['Conforto Ambiental','ARQ104']]],
-    ['Odontologia',[['Anatomia de Cabeça e Pescoço','ODO101'],['Histologia','ODO102'],['Bioquímica Oral','ODO103'],['Saúde Bucal Coletiva','ODO104']]],
-    ['Enfermagem',[['Fundamentos de Enfermagem','ENF101'],['Anatomia Humana','ENF102'],['Farmacologia','ENF103'],['Saúde da Família','ENF104']]],
-    ['Publicidade e Propaganda',[['Teoria da Comunicação','PUB101'],['Redação Publicitária','PUB102'],['Fotografia','PUB103'],['Planejamento de Marketing','PUB104']]],
-  ];
-  const insertCourse = db.prepare('INSERT OR IGNORE INTO courses (institution_id,name) VALUES (?,?)');
-  const findCourse = db.prepare('SELECT id FROM courses WHERE institution_id=? AND name=?');
-  const insertSubject = db.prepare('INSERT OR IGNORE INTO subjects (course_id,name,code) VALUES (?,?,?)');
-  for (const [courseName, subjects] of catalog) {
-    insertCourse.run(university.id,courseName);
-    const course = findCourse.get(university.id,courseName) as { id: number };
-    for (const [subjectName, code] of subjects) insertSubject.run(course.id,subjectName,code);
-  }
-}
-
-function init(db: DatabaseConnection) {
-  db.exec(`
-    PRAGMA foreign_keys = ON;
-    PRAGMA journal_mode = WAL;
-    CREATE TABLE IF NOT EXISTS institutions (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, kind TEXT NOT NULL CHECK(kind IN ('Faculdade','Escola')), city TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS courses (id INTEGER PRIMARY KEY, institution_id INTEGER NOT NULL REFERENCES institutions(id), name TEXT NOT NULL, UNIQUE(institution_id,name));
-    CREATE TABLE IF NOT EXISTS subjects (id INTEGER PRIMARY KEY, course_id INTEGER NOT NULL REFERENCES courses(id), name TEXT NOT NULL, code TEXT NOT NULL, UNIQUE(course_id,code));
-    CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE COLLATE NOCASE, password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'STUDENT' CHECK(role IN ('STUDENT','MONITOR','PROFESSOR','ADMIN')), verified INTEGER NOT NULL DEFAULT 0, institution_id INTEGER REFERENCES institutions(id), course_id INTEGER REFERENCES courses(id), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-    CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, expires_at TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS questions (id TEXT PRIMARY KEY, author_id TEXT NOT NULL REFERENCES users(id), subject_id INTEGER NOT NULL REFERENCES subjects(id), title TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'OPEN' CHECK(status IN ('OPEN','RESOLVED','PENDING','REMOVED')), moderation_reason TEXT, accepted_answer_id TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-    CREATE TABLE IF NOT EXISTS answers (id TEXT PRIMARY KEY, question_id TEXT NOT NULL REFERENCES questions(id) ON DELETE CASCADE, author_id TEXT NOT NULL REFERENCES users(id), body TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'APPROVED' CHECK(status IN ('APPROVED','PENDING','REMOVED')), moderation_reason TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-    CREATE TABLE IF NOT EXISTS answer_votes (answer_id TEXT NOT NULL REFERENCES answers(id) ON DELETE CASCADE, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, PRIMARY KEY(answer_id,user_id));
-    CREATE TABLE IF NOT EXISTS reports (id TEXT PRIMARY KEY, reporter_id TEXT NOT NULL REFERENCES users(id), target_type TEXT NOT NULL CHECK(target_type IN ('QUESTION','ANSWER')), target_id TEXT NOT NULL, reason TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'OPEN', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(reporter_id,target_type,target_id));
-    CREATE TABLE IF NOT EXISTS role_requests (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, requested_role TEXT NOT NULL CHECK(requested_role IN ('MONITOR','PROFESSOR')), details TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING','APPROVED','REJECTED')), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, reviewed_at TEXT);
-    CREATE TABLE IF NOT EXISTS question_saves (user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, question_id TEXT NOT NULL REFERENCES questions(id) ON DELETE CASCADE, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(user_id,question_id));
-    CREATE TABLE IF NOT EXISTS subject_follows (user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, subject_id INTEGER NOT NULL REFERENCES subjects(id) ON DELETE CASCADE, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(user_id,subject_id));
-    CREATE TABLE IF NOT EXISTS notifications (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, type TEXT NOT NULL, actor_id TEXT REFERENCES users(id) ON DELETE SET NULL, entity_type TEXT, entity_id TEXT, title TEXT NOT NULL, body TEXT, read_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-    CREATE TABLE IF NOT EXISTS conversations (id TEXT PRIMARY KEY, title TEXT NOT NULL, subject_id INTEGER NOT NULL REFERENCES subjects(id), created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, status TEXT NOT NULL DEFAULT 'OPEN' CHECK(status IN ('OPEN','SCHEDULED','CLOSED')), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-    CREATE TABLE IF NOT EXISTS conversation_members (conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, last_read_at TEXT, joined_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(conversation_id,user_id));
-    CREATE TABLE IF NOT EXISTS chat_messages (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, author_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, body TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'APPROVED' CHECK(status IN ('APPROVED','PENDING','REMOVED')), moderation_reason TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-    CREATE TABLE IF NOT EXISTS study_requests (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, requester_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, receiver_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, proposed_at TEXT NOT NULL, note TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING','ACCEPTED','REJECTED')), reviewed_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-    CREATE UNIQUE INDEX IF NOT EXISTS one_pending_role_request ON role_requests(user_id) WHERE status='PENDING';
-    CREATE INDEX IF NOT EXISTS questions_feed_idx ON questions(status,created_at DESC);
-    CREATE INDEX IF NOT EXISTS answers_question_idx ON answers(question_id,status);
-    CREATE INDEX IF NOT EXISTS reports_status_idx ON reports(status,created_at);
-    CREATE INDEX IF NOT EXISTS question_saves_user_idx ON question_saves(user_id,created_at DESC);
-    CREATE INDEX IF NOT EXISTS subject_follows_user_idx ON subject_follows(user_id,created_at DESC);
-    CREATE INDEX IF NOT EXISTS notifications_user_idx ON notifications(user_id,read_at,created_at DESC);
-    CREATE UNIQUE INDEX IF NOT EXISTS notifications_event_unique ON notifications(user_id,type,entity_id,actor_id);
-    CREATE INDEX IF NOT EXISTS conversation_members_user_idx ON conversation_members(user_id,conversation_id);
-    CREATE INDEX IF NOT EXISTS chat_messages_conversation_idx ON chat_messages(conversation_id,created_at);
-    CREATE INDEX IF NOT EXISTS study_requests_conversation_idx ON study_requests(conversation_id,status,created_at DESC);
-  `);
-  const count = (db.prepare('SELECT count(*) as count FROM institutions').get() as { count: number }).count;
-  if (count) {
-    seedUniversityCatalog(db);
-    if (process.env.NODE_ENV === 'production' && process.env.DEMO_MODE !== '1' && process.env.BOOTSTRAP_ADMIN_EMAIL && process.env.BOOTSTRAP_ADMIN_PASSWORD && process.env.BOOTSTRAP_ADMIN_PASSWORD.length >= 12 && !(db.prepare("SELECT id FROM users WHERE role='ADMIN' LIMIT 1").get())) {
-      db.prepare('INSERT INTO users (id,name,email,password_hash,role,verified,institution_id,course_id) VALUES (?,?,?,?,?,?,?,?)').run(randomUUID(),'Coordenação Acadêmica',process.env.BOOTSTRAP_ADMIN_EMAIL,hashPassword(process.env.BOOTSTRAP_ADMIN_PASSWORD),'ADMIN',1,1,1);
-    }
-    return;
-  }
-  db.exec('BEGIN IMMEDIATE');
-  try {
-    const inst = db.prepare('INSERT INTO institutions (name,kind,city) VALUES (?,?,?)');
-    inst.run('Universidade de Fortaleza (demonstração)', 'Faculdade', 'Fortaleza');
-    inst.run('Escola Modelo (demonstração)', 'Escola', 'Fortaleza');
-    const course = db.prepare('INSERT INTO courses (institution_id,name) VALUES (?,?)');
-    course.run(1, 'Ciência da Computação');
-    course.run(1, 'Engenharia');
-    course.run(1, 'Administração');
-    course.run(2, 'Ensino Médio');
-    const subject = db.prepare('INSERT INTO subjects (course_id,name,code) VALUES (?,?,?)');
-    [
-      [1,'Raciocínio Lógico','RL101'],[1,'Programação','CC102'],[1,'Banco de Dados','CC203'],[1,'Algoritmos','CC104'],
-      [2,'Cálculo II','ENG202'],[2,'Álgebra Linear','ENG105'],[2,'Física','ENG106'],
-      [3,'Estatística','ADM201'],[3,'Matemática Financeira','ADM202'],
-      [4,'Matemática','EM101'],[4,'Geografia','EM102'],[4,'História','EM103'],[4,'Biologia','EM104'],[4,'Literatura','EM105']
-    ].forEach(([courseId,name,code]) => subject.run(courseId,name,code));
-    seedUniversityCatalog(db);
-    const user = db.prepare('INSERT INTO users (id,name,email,password_hash,role,verified,institution_id,course_id) VALUES (?,?,?,?,?,?,?,?)');
-    const demoMode = process.env.NODE_ENV !== 'production' || process.env.DEMO_MODE === '1';
-    if (demoMode) {
-      const demoPassword = hashPassword(process.env.DEMO_PASSWORD || 'demo12345');
-      user.run('demo-aluna','Marina Alves','aluna@demo.local',demoPassword,'STUDENT',0,1,1);
-      user.run('demo-monitor','Pedro Santos','monitor@demo.local',demoPassword,'MONITOR',1,1,1);
-      user.run('demo-professora','Ana Clara','professora@demo.local',demoPassword,'PROFESSOR',1,1,2);
-      user.run('demo-admin','Coordenação Acadêmica','admin@demo.local',demoPassword,'ADMIN',1,1,1);
-      const question = db.prepare('INSERT INTO questions (id,author_id,subject_id,title,body,status,accepted_answer_id) VALUES (?,?,?,?,?,?,?)');
-      question.run('demo-q1','demo-aluna',5,'Como interpretar uma integral dupla?','Estou estudando cálculo e queria entender como escolher os limites de integração de uma região limitada por duas curvas. Já fiz o desenho, mas não sei como montar a integral.','RESOLVED','demo-a1');
-      question.run('demo-q2','demo-aluna',2,'Qual a diferença entre ponteiro e referência em C++?','Na aula de programação, vi ponteiros e referências em C++. Em qual situação devo usar cada recurso e como isso afeta a memória?','OPEN',null);
-      const answer = db.prepare('INSERT INTO answers (id,question_id,author_id,body,status) VALUES (?,?,?,?,?)');
-      answer.run('demo-a1','demo-q1','demo-professora','Comece desenhando a região e encontrando as interseções das curvas. Depois, escolha fatias verticais ou horizontais e escreva os limites interno e externo.','APPROVED');
-      answer.run('demo-a2','demo-q1','demo-monitor','Se a região for circular, também vale testar coordenadas polares. Nesse caso, lembre do fator r no jacobiano.','APPROVED');
-    } else if (process.env.BOOTSTRAP_ADMIN_EMAIL && process.env.BOOTSTRAP_ADMIN_PASSWORD && process.env.BOOTSTRAP_ADMIN_PASSWORD.length >= 12) {
-      user.run(randomUUID(),'Coordenação Acadêmica',process.env.BOOTSTRAP_ADMIN_EMAIL,hashPassword(process.env.BOOTSTRAP_ADMIN_PASSWORD),'ADMIN',1,1,1);
-    }
-    db.exec('COMMIT');
-  } catch (error) { db.exec('ROLLBACK'); throw error; }
-}
-
-export function database() {
-  if (!globalDb.academiaDb) {
-    mkdirSync(path.dirname(file), { recursive: true });
-    const db = new DatabaseSync(file);
-    init(db);
-    globalDb.academiaDb = db;
-  }
-  return globalDb.academiaDb;
-}
-
-export function all<T>(sql: string, ...params: (string | number | null)[]): T[] {
-  return database().prepare(sql).all(...params) as T[];
-}
-export function one<T>(sql: string, ...params: (string | number | null)[]): T | undefined {
-  return database().prepare(sql).get(...params) as T | undefined;
-}
-
-export function getUser(id: string) {
-  return one<User>(`SELECT u.id,u.name,u.email,u.role,u.verified,u.institution_id,u.course_id,u.created_at,i.name institution_name,c.name course_name FROM users u LEFT JOIN institutions i ON i.id=u.institution_id LEFT JOIN courses c ON c.id=u.course_id WHERE u.id=?`, id);
-}
-export function getInstitutions() { return all<Institution>('SELECT * FROM institutions ORDER BY name'); }
-export function getCourses() { return all<Course>('SELECT c.*,i.name institution_name FROM courses c JOIN institutions i ON i.id=c.institution_id ORDER BY i.name,c.name'); }
-export function getCoursesForInstitution(institutionId: number) { return all<Course>('SELECT c.*,i.name institution_name FROM courses c JOIN institutions i ON i.id=c.institution_id WHERE c.institution_id=? ORDER BY c.name',institutionId); }
-export function getSubjects() { return all<Subject>('SELECT s.*,c.name course_name,i.name institution_name FROM subjects s JOIN courses c ON c.id=s.course_id JOIN institutions i ON i.id=c.institution_id ORDER BY i.name,c.name,s.name'); }
-export function getSubjectsForInstitution(institutionId: number) { return all<Subject>('SELECT s.*,c.name course_name,i.name institution_name FROM subjects s JOIN courses c ON c.id=s.course_id JOIN institutions i ON i.id=c.institution_id WHERE c.institution_id=? ORDER BY c.name,s.name',institutionId); }
-export function getSubjectCatalog() {
-  return all<SubjectSummary>(`SELECT s.*,c.institution_id,c.name course_name,i.name institution_name,
-    (SELECT count(*) FROM questions q WHERE q.subject_id=s.id AND q.status IN ('OPEN','RESOLVED')) question_count,
-    (SELECT max(q.created_at) FROM questions q WHERE q.subject_id=s.id AND q.status IN ('OPEN','RESOLVED')) latest_question_at
-    FROM subjects s JOIN courses c ON c.id=s.course_id JOIN institutions i ON i.id=c.institution_id
-    ORDER BY i.name,c.name,s.name`);
-}
-export function getSubjectCounts(subjectId: number) {
-  return one<{ unanswered: number; resolved: number }>(`SELECT
-    (SELECT count(*) FROM questions q WHERE q.subject_id=? AND q.status IN ('OPEN','RESOLVED') AND NOT EXISTS (SELECT 1 FROM answers a WHERE a.question_id=q.id AND a.status='APPROVED')) unanswered,
-    (SELECT count(*) FROM questions q WHERE q.subject_id=? AND q.status='RESOLVED') resolved`, subjectId, subjectId)!;
-}
+export async function getUser(id: string) { return one<User>(`SELECT u.id,u.name,u.email,u.role,u.verified,u.institution_id,u.course_id,u.created_at,i.name institution_name,c.name course_name FROM users u LEFT JOIN institutions i ON i.id=u.institution_id LEFT JOIN courses c ON c.id=u.course_id WHERE u.id=?`, id); }
+export async function getInstitutions() { return all<Institution>('SELECT * FROM institutions ORDER BY name'); }
+export async function getCourses() { return all<Course>('SELECT c.*,i.name institution_name FROM courses c JOIN institutions i ON i.id=c.institution_id ORDER BY i.name,c.name'); }
+export async function getCoursesForInstitution(institutionId: number) { return all<Course>('SELECT c.*,i.name institution_name FROM courses c JOIN institutions i ON i.id=c.institution_id WHERE c.institution_id=? ORDER BY c.name',institutionId); }
+export async function getSubjects() { return all<Subject>('SELECT s.*,c.name course_name,i.name institution_name FROM subjects s JOIN courses c ON c.id=s.course_id JOIN institutions i ON i.id=c.institution_id ORDER BY i.name,c.name,s.name'); }
+export async function getSubjectsForInstitution(institutionId: number) { return all<Subject>('SELECT s.*,c.name course_name,i.name institution_name FROM subjects s JOIN courses c ON c.id=s.course_id JOIN institutions i ON i.id=c.institution_id WHERE c.institution_id=? ORDER BY c.name,s.name',institutionId); }
+export async function getSubjectCatalog() { return all<SubjectSummary>(`SELECT s.*,c.institution_id,c.name course_name,i.name institution_name,(SELECT count(*) FROM questions q WHERE q.subject_id=s.id AND q.status IN ('OPEN','RESOLVED')) question_count,(SELECT max(q.created_at) FROM questions q WHERE q.subject_id=s.id AND q.status IN ('OPEN','RESOLVED')) latest_question_at FROM subjects s JOIN courses c ON c.id=s.course_id JOIN institutions i ON i.id=c.institution_id ORDER BY i.name,c.name,s.name`); }
+export async function getSubjectCounts(subjectId: number) { return (await one<{ unanswered: number; resolved: number }>(`SELECT (SELECT count(*) FROM questions q WHERE q.subject_id=? AND q.status IN ('OPEN','RESOLVED') AND NOT EXISTS (SELECT 1 FROM answers a WHERE a.question_id=q.id AND a.status='APPROVED')) unanswered,(SELECT count(*) FROM questions q WHERE q.subject_id=? AND q.status='RESOLVED') resolved`, subjectId, subjectId)) ?? { unanswered: 0, resolved: 0 }; }
 
 const questionSelect = `SELECT q.*,u.name author_name,u.role author_role,u.verified author_verified,s.name subject_name,c.name course_name,i.name institution_name,(SELECT count(*) FROM answers a WHERE a.question_id=q.id AND a.status='APPROVED') answer_count FROM questions q JOIN users u ON u.id=q.author_id JOIN subjects s ON s.id=q.subject_id JOIN courses c ON c.id=s.course_id JOIN institutions i ON i.id=c.institution_id`;
-export function getQuestion(id: string) { return one<Question>(`${questionSelect} WHERE q.id=?`, id); }
+export async function getQuestion(id: string) { return one<Question>(`${questionSelect} WHERE q.id=?`, id); }
 export type QuestionFilters = { search?: string; subjectId?: number; status?: string; institutionId?: number; limit?: number; offset?: number };
 function questionFilter(filters: QuestionFilters) {
   const where = ["q.status IN ('OPEN','RESOLVED')"];
@@ -196,96 +51,28 @@ function questionFilter(filters: QuestionFilters) {
   if (filters.institutionId) { where.push('i.id=?'); params.push(filters.institutionId); }
   return { where, params };
 }
-export function getQuestions(filters: QuestionFilters = {}) {
-  const { where, params } = questionFilter(filters);
-  const limit = Math.min(100, Math.max(1, Math.trunc(filters.limit ?? 100)));
-  const offset = Math.max(0, Math.trunc(filters.offset ?? 0));
-  return all<Question>(`${questionSelect} WHERE ${where.join(' AND ')} ORDER BY q.created_at DESC LIMIT ? OFFSET ?`, ...params, limit, offset);
-}
-export function countQuestions(filters: Omit<QuestionFilters, 'limit' | 'offset'> = {}) {
-  const { where, params } = questionFilter(filters);
-  return one<{ count: number }>(`SELECT count(*) count FROM questions q JOIN subjects s ON s.id=q.subject_id JOIN courses c ON c.id=s.course_id JOIN institutions i ON i.id=c.institution_id WHERE ${where.join(' AND ')}`, ...params)?.count ?? 0;
-}
-export function getAnswers(questionId: string) {
-  return all<Answer>(`SELECT a.*,u.name author_name,u.role author_role,u.verified author_verified,(SELECT count(*) FROM answer_votes v WHERE v.answer_id=a.id) useful_count FROM answers a JOIN users u ON u.id=a.author_id WHERE a.question_id=? AND a.status='APPROVED' ORDER BY a.created_at ASC`,questionId);
-}
-export function getUserStats(id: string) {
-  return one<{ questions: number; answers: number; received: number; accepted: number; useful: number }>(`SELECT (SELECT count(*) FROM questions WHERE author_id=? AND status IN ('OPEN','RESOLVED')) questions,(SELECT count(*) FROM answers WHERE author_id=? AND status='APPROVED') answers,(SELECT count(*) FROM answers a JOIN questions q ON q.id=a.question_id WHERE q.author_id=? AND q.status IN ('OPEN','RESOLVED') AND a.status='APPROVED') received,(SELECT count(*) FROM questions q JOIN answers a ON a.id=q.accepted_answer_id WHERE a.author_id=? AND a.status='APPROVED' AND q.status='RESOLVED') accepted,(SELECT count(*) FROM answer_votes v JOIN answers a ON a.id=v.answer_id WHERE a.author_id=? AND a.status='APPROVED') useful`,id,id,id,id,id)!;
-}
-export function getRanking(institutionId?: number) {
-  return all<{ id:string; name:string; role:Role; verified:number; institution_name:string; answers:number; accepted:number; useful:number; points:number }>(`SELECT u.id,u.name,u.role,u.verified,i.name institution_name,(SELECT count(*) FROM answers a WHERE a.author_id=u.id AND a.status='APPROVED') answers,(SELECT count(*) FROM questions q JOIN answers a ON a.id=q.accepted_answer_id WHERE a.author_id=u.id AND a.status='APPROVED' AND q.status='RESOLVED') accepted,(SELECT count(*) FROM answer_votes v JOIN answers a ON a.id=v.answer_id WHERE a.author_id=u.id AND a.status='APPROVED') useful,((SELECT count(*) FROM answers a WHERE a.author_id=u.id AND a.status='APPROVED')*2+(SELECT count(*) FROM questions q JOIN answers a ON a.id=q.accepted_answer_id WHERE a.author_id=u.id AND a.status='APPROVED' AND q.status='RESOLVED')*10+(SELECT count(*) FROM answer_votes v JOIN answers a ON a.id=v.answer_id WHERE a.author_id=u.id AND a.status='APPROVED')) points FROM users u JOIN institutions i ON i.id=u.institution_id WHERE u.role IN ('MONITOR','PROFESSOR') AND u.verified=1 ${institutionId ? 'AND u.institution_id=?' : ''} ORDER BY points DESC,answers DESC,u.name LIMIT 50`, ...(institutionId ? [institutionId] : []));
-}
-export function isQuestionSaved(userId: string, questionId: string) {
-  return Boolean(one('SELECT 1 FROM question_saves WHERE user_id=? AND question_id=?', userId, questionId));
-}
-export function getSavedQuestions(userId: string) {
-  return all<SavedQuestion>(`SELECT q.*,u.name author_name,u.role author_role,u.verified author_verified,s.name subject_name,c.name course_name,i.name institution_name,
-    (SELECT count(*) FROM answers a WHERE a.question_id=q.id AND a.status='APPROVED') answer_count,qs.created_at saved_at
-    FROM question_saves qs JOIN questions q ON q.id=qs.question_id JOIN users u ON u.id=q.author_id JOIN subjects s ON s.id=q.subject_id JOIN courses c ON c.id=s.course_id JOIN institutions i ON i.id=c.institution_id
-    WHERE qs.user_id=? AND q.status IN ('OPEN','RESOLVED') ORDER BY qs.created_at DESC`, userId);
-}
-export function isSubjectFollowed(userId: string, subjectId: number) {
-  return Boolean(one('SELECT 1 FROM subject_follows WHERE user_id=? AND subject_id=?', userId, subjectId));
-}
-export function getSubjectFollowerCount(subjectId: number) {
-  return one<{ count: number }>('SELECT count(*) count FROM subject_follows WHERE subject_id=?', subjectId)?.count ?? 0;
-}
-export function getFollowedSubjects(userId: string) {
-  return all<FollowedSubject>(`SELECT s.*,c.institution_id,c.name course_name,i.name institution_name,f.created_at followed_at,
-    (SELECT count(*) FROM questions q WHERE q.subject_id=s.id AND q.status IN ('OPEN','RESOLVED')) question_count,
-    (SELECT max(q.created_at) FROM questions q WHERE q.subject_id=s.id AND q.status IN ('OPEN','RESOLVED')) latest_question_at,
-    (SELECT count(*) FROM subject_follows sf WHERE sf.subject_id=s.id) follower_count
-    FROM subject_follows f JOIN subjects s ON s.id=f.subject_id JOIN courses c ON c.id=s.course_id JOIN institutions i ON i.id=c.institution_id
-    WHERE f.user_id=? ORDER BY f.created_at DESC`, userId);
-}
-export function createNotification(userId: string, type: string, actorId: string | null, entityType: string | null, entityId: string | null, title: string, body?: string | null) {
-  database().prepare('INSERT OR IGNORE INTO notifications (id,user_id,type,actor_id,entity_type,entity_id,title,body) VALUES (?,?,?,?,?,?,?,?)').run(randomUUID(),userId,type,actorId,entityType,entityId,title,body ?? null);
-}
-export function getNotifications(userId: string, limit = 50) {
-  return all<Notification>(`SELECT n.*,u.name actor_name FROM notifications n LEFT JOIN users u ON u.id=n.actor_id WHERE n.user_id=? ORDER BY n.created_at DESC LIMIT ?`, userId, Math.min(100, Math.max(1, limit)));
-}
-export function getUnreadNotificationCount(userId: string) {
-  return one<{ count: number }>('SELECT count(*) count FROM notifications WHERE user_id=? AND read_at IS NULL', userId)?.count ?? 0;
-}
-export function getChatContacts(userId: string) {
-  return all<ChatContact>(`SELECT u.id,u.name,u.role,u.verified,c.name course_name,i.name institution_name
-    FROM users u LEFT JOIN courses c ON c.id=u.course_id LEFT JOIN institutions i ON i.id=u.institution_id
-    WHERE u.id<>? AND u.role IN ('MONITOR','PROFESSOR','ADMIN') AND (u.verified=1 OR u.role='ADMIN')
-    AND (u.institution_id=(SELECT institution_id FROM users WHERE id=?) OR u.role='ADMIN')
-    ORDER BY CASE u.role WHEN 'MONITOR' THEN 0 WHEN 'PROFESSOR' THEN 1 ELSE 2 END,u.name`, userId, userId);
-}
-const conversationSelect = `SELECT c.id,c.title,c.subject_id,s.name subject_name,s.code subject_code,c.status,c.created_by,c.created_at,c.updated_at,
-  other.user_id other_user_id,u.name other_user_name,u.role other_user_role,u.verified other_user_verified,mine.last_read_at,
-  (SELECT body FROM chat_messages cm WHERE cm.conversation_id=c.id AND cm.status='APPROVED' ORDER BY cm.created_at DESC LIMIT 1) last_message,
-  (SELECT max(created_at) FROM chat_messages cm WHERE cm.conversation_id=c.id AND cm.status='APPROVED') last_message_at,
-  (SELECT count(*) FROM chat_messages cm WHERE cm.conversation_id=c.id AND cm.author_id<>? AND cm.status='APPROVED' AND (mine.last_read_at IS NULL OR cm.created_at>mine.last_read_at)) unread_count
-  FROM conversations c JOIN conversation_members mine ON mine.conversation_id=c.id AND mine.user_id=?
-  JOIN conversation_members other ON other.conversation_id=c.id AND other.user_id<>?
-  JOIN users u ON u.id=other.user_id JOIN subjects s ON s.id=c.subject_id`;
-export function getConversations(userId: string) {
-  return all<ChatConversation>(`${conversationSelect} ORDER BY COALESCE(last_message_at,c.updated_at) DESC`, userId, userId, userId);
-}
-export function getConversationForUser(conversationId: string, userId: string) {
-  return one<ChatConversation>(`${conversationSelect} WHERE c.id=?`, userId, userId, userId, conversationId);
-}
-export function getChatMessages(conversationId: string, userId: string) {
-  return all<ChatMessage>(`SELECT cm.*,u.name author_name FROM chat_messages cm JOIN users u ON u.id=cm.author_id
-    WHERE cm.conversation_id=? AND (cm.status='APPROVED' OR cm.author_id=?) ORDER BY cm.created_at ASC`, conversationId, userId);
-}
-export function getStudyRequests(conversationId: string) {
-  return all<StudyRequest>(`SELECT sr.*,requester.name requester_name,receiver.name receiver_name FROM study_requests sr
-    JOIN users requester ON requester.id=sr.requester_id JOIN users receiver ON receiver.id=sr.receiver_id
-    WHERE sr.conversation_id=? ORDER BY sr.created_at DESC`, conversationId);
-}
-export function markConversationRead(conversationId: string, userId: string) {
-  database().prepare('UPDATE conversation_members SET last_read_at=CURRENT_TIMESTAMP WHERE conversation_id=? AND user_id=?').run(conversationId,userId);
-}
-export function getUnreadChatCount(userId: string) {
-  return one<{ count: number }>(`SELECT count(*) count FROM chat_messages cm JOIN conversation_members mine ON mine.conversation_id=cm.conversation_id AND mine.user_id=?
-    WHERE cm.author_id<>? AND cm.status='APPROVED' AND (mine.last_read_at IS NULL OR cm.created_at>mine.last_read_at)`, userId, userId)?.count ?? 0;
-}
-export function createUser(name: string, email: string, password: string, institutionId: number, courseId: number) {
-  const id = randomUUID();
-  database().prepare('INSERT INTO users (id,name,email,password_hash,institution_id,course_id) VALUES (?,?,?,?,?,?)').run(id,name,email,hashPassword(password),institutionId,courseId);
-  return id;
-}
+export async function getQuestions(filters: QuestionFilters = {}) { const { where, params } = questionFilter(filters); const limit = Math.min(100, Math.max(1, Math.trunc(filters.limit ?? 100))); const offset = Math.max(0, Math.trunc(filters.offset ?? 0)); return all<Question>(`${questionSelect} WHERE ${where.join(' AND ')} ORDER BY q.created_at DESC LIMIT ? OFFSET ?`, ...params, limit, offset); }
+export async function countQuestions(filters: Omit<QuestionFilters, 'limit' | 'offset'> = {}) { const { where, params } = questionFilter(filters); return (await one<{ count: number }>(`SELECT count(*) count FROM questions q JOIN subjects s ON s.id=q.subject_id JOIN courses c ON c.id=s.course_id JOIN institutions i ON i.id=c.institution_id WHERE ${where.join(' AND ')}`, ...params))?.count ?? 0; }
+export async function getAnswers(questionId: string) { return all<Answer>(`SELECT a.*,u.name author_name,u.role author_role,u.verified author_verified,(SELECT count(*) FROM answer_votes v WHERE v.answer_id=a.id) useful_count FROM answers a JOIN users u ON u.id=a.author_id WHERE a.question_id=? AND a.status='APPROVED' ORDER BY a.created_at ASC`,questionId); }
+export async function getUserStats(id: string) { return (await one<{ questions: number; answers: number; received: number; accepted: number; useful: number }>(`SELECT (SELECT count(*) FROM questions WHERE author_id=? AND status IN ('OPEN','RESOLVED')) questions,(SELECT count(*) FROM answers WHERE author_id=? AND status='APPROVED') answers,(SELECT count(*) FROM answers a JOIN questions q ON q.id=a.question_id WHERE q.author_id=? AND q.status IN ('OPEN','RESOLVED') AND a.status='APPROVED') received,(SELECT count(*) FROM questions q JOIN answers a ON a.id=q.accepted_answer_id WHERE a.author_id=? AND a.status='APPROVED' AND q.status='RESOLVED') accepted,(SELECT count(*) FROM answer_votes v JOIN answers a ON a.id=v.answer_id WHERE a.author_id=? AND a.status='APPROVED') useful`,id,id,id,id,id)) ?? { questions: 0, answers: 0, received: 0, accepted: 0, useful: 0 }; }
+export async function getRanking(institutionId?: number) { return all<{ id:string; name:string; role:Role; verified:number; institution_name:string; answers:number; accepted:number; useful:number; points:number }>(`SELECT u.id,u.name,u.role,u.verified,i.name institution_name,(SELECT count(*) FROM answers a WHERE a.author_id=u.id AND a.status='APPROVED') answers,(SELECT count(*) FROM questions q JOIN answers a ON a.id=q.accepted_answer_id WHERE a.author_id=u.id AND a.status='APPROVED' AND q.status='RESOLVED') accepted,(SELECT count(*) FROM answer_votes v JOIN answers a ON a.id=v.answer_id WHERE a.author_id=u.id AND a.status='APPROVED') useful,((SELECT count(*) FROM answers a WHERE a.author_id=u.id AND a.status='APPROVED')*2+(SELECT count(*) FROM questions q JOIN answers a ON a.id=q.accepted_answer_id WHERE a.author_id=u.id AND a.status='APPROVED' AND q.status='RESOLVED')*10+(SELECT count(*) FROM answer_votes v JOIN answers a ON a.id=v.answer_id WHERE a.author_id=u.id AND a.status='APPROVED')) points FROM users u JOIN institutions i ON i.id=u.institution_id WHERE u.role IN ('MONITOR','PROFESSOR') AND u.verified=1 ${institutionId ? 'AND u.institution_id=?' : ''} ORDER BY points DESC,answers DESC,u.name LIMIT 50`, ...(institutionId ? [institutionId] : [])); }
+export async function isQuestionSaved(userId: string, questionId: string) { return Boolean(await one('SELECT 1 FROM question_saves WHERE user_id=? AND question_id=?', userId, questionId)); }
+export async function getSavedQuestions(userId: string) { return all<SavedQuestion>(`SELECT q.*,u.name author_name,u.role author_role,u.verified author_verified,s.name subject_name,c.name course_name,i.name institution_name,(SELECT count(*) FROM answers a WHERE a.question_id=q.id AND a.status='APPROVED') answer_count,qs.created_at saved_at FROM question_saves qs JOIN questions q ON q.id=qs.question_id JOIN users u ON u.id=q.author_id JOIN subjects s ON s.id=q.subject_id JOIN courses c ON c.id=s.course_id JOIN institutions i ON i.id=c.institution_id WHERE qs.user_id=? AND q.status IN ('OPEN','RESOLVED') ORDER BY qs.created_at DESC`, userId); }
+export async function isSubjectFollowed(userId: string, subjectId: number) { return Boolean(await one('SELECT 1 FROM subject_follows WHERE user_id=? AND subject_id=?', userId, subjectId)); }
+export async function getSubjectFollowerCount(subjectId: number) { return (await one<{ count: number }>('SELECT count(*) count FROM subject_follows WHERE subject_id=?', subjectId))?.count ?? 0; }
+export async function getFollowedSubjects(userId: string) { return all<FollowedSubject>(`SELECT s.*,c.institution_id,c.name course_name,i.name institution_name,f.created_at followed_at,(SELECT count(*) FROM questions q WHERE q.subject_id=s.id AND q.status IN ('OPEN','RESOLVED')) question_count,(SELECT max(q.created_at) FROM questions q WHERE q.subject_id=s.id AND q.status IN ('OPEN','RESOLVED')) latest_question_at,(SELECT count(*) FROM subject_follows sf WHERE sf.subject_id=s.id) follower_count FROM subject_follows f JOIN subjects s ON s.id=f.subject_id JOIN courses c ON c.id=s.course_id JOIN institutions i ON i.id=c.institution_id WHERE f.user_id=? ORDER BY f.created_at DESC`, userId); }
+export async function createNotification(userId: string, type: string, actorId: string | null, entityType: string | null, entityId: string | null, title: string, body?: string | null) { await execute('INSERT OR IGNORE INTO notifications (id,user_id,type,actor_id,entity_type,entity_id,title,body) VALUES (?,?,?,?,?,?,?,?)',randomUUID(),userId,type,actorId,entityType,entityId,title,body ?? null); }
+export async function getNotifications(userId: string, limit = 50) { return all<Notification>(`SELECT n.*,u.name actor_name FROM notifications n LEFT JOIN users u ON u.id=n.actor_id WHERE n.user_id=? ORDER BY n.created_at DESC LIMIT ?`, userId, Math.min(100, Math.max(1, limit))); }
+export async function getUnreadNotificationCount(userId: string) { return (await one<{ count: number }>('SELECT count(*) count FROM notifications WHERE user_id=? AND read_at IS NULL', userId))?.count ?? 0; }
+export async function getChatContacts(userId: string) { return all<ChatContact>(`SELECT u.id,u.name,u.role,u.verified,c.name course_name,i.name institution_name FROM users u LEFT JOIN courses c ON c.id=u.course_id LEFT JOIN institutions i ON i.id=u.institution_id WHERE u.id<>? AND u.role IN ('MONITOR','PROFESSOR','ADMIN') AND (u.verified=1 OR u.role='ADMIN') AND (u.institution_id=(SELECT institution_id FROM users WHERE id=?) OR u.role='ADMIN') ORDER BY CASE u.role WHEN 'MONITOR' THEN 0 WHEN 'PROFESSOR' THEN 1 ELSE 2 END,u.name`, userId, userId); }
+const conversationSelect = `SELECT c.id,c.title,c.subject_id,s.name subject_name,s.code subject_code,c.status,c.created_by,c.created_at,c.updated_at,other.user_id other_user_id,u.name other_user_name,u.role other_user_role,u.verified other_user_verified,mine.last_read_at,(SELECT body FROM chat_messages cm WHERE cm.conversation_id=c.id AND cm.status='APPROVED' ORDER BY cm.created_at DESC LIMIT 1) last_message,(SELECT max(created_at) FROM chat_messages cm WHERE cm.conversation_id=c.id AND cm.status='APPROVED') last_message_at,(SELECT count(*) FROM chat_messages cm WHERE cm.conversation_id=c.id AND cm.author_id<>? AND cm.status='APPROVED' AND (mine.last_read_at IS NULL OR cm.created_at>mine.last_read_at)) unread_count FROM conversations c JOIN conversation_members mine ON mine.conversation_id=c.id AND mine.user_id=? JOIN conversation_members other ON other.conversation_id=c.id AND other.user_id<>? JOIN users u ON u.id=other.user_id JOIN subjects s ON s.id=c.subject_id`;
+export async function getConversations(userId: string) { return all<ChatConversation>(`${conversationSelect} ORDER BY COALESCE(last_message_at,c.updated_at) DESC`, userId, userId, userId); }
+export async function getConversationForUser(conversationId: string, userId: string) { return one<ChatConversation>(`${conversationSelect} WHERE c.id=?`, userId, userId, userId, conversationId); }
+export async function getChatMessages(conversationId: string, userId: string) { return all<ChatMessage>(`SELECT cm.*,u.name author_name FROM chat_messages cm JOIN users u ON u.id=cm.author_id WHERE cm.conversation_id=? AND (cm.status='APPROVED' OR cm.author_id=?) ORDER BY cm.created_at ASC`, conversationId, userId); }
+export async function getStudyRequests(conversationId: string) { return all<StudyRequest>(`SELECT sr.*,requester.name requester_name,receiver.name receiver_name FROM study_requests sr JOIN users requester ON requester.id=sr.requester_id JOIN users receiver ON receiver.id=sr.receiver_id WHERE sr.conversation_id=? ORDER BY sr.created_at DESC`, conversationId); }
+export async function markConversationRead(conversationId: string, userId: string) { await execute('UPDATE conversation_members SET last_read_at=CURRENT_TIMESTAMP WHERE conversation_id=? AND user_id=?',conversationId,userId); }
+export async function getUnreadChatCount(userId: string) { return (await one<{ count: number }>(`SELECT count(*) count FROM chat_messages cm JOIN conversation_members mine ON mine.conversation_id=cm.conversation_id AND mine.user_id=? WHERE cm.author_id<>? AND cm.status='APPROVED' AND (mine.last_read_at IS NULL OR cm.created_at>mine.last_read_at)`, userId, userId))?.count ?? 0; }
+export function normalizeSubjectName(value: string) { return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('pt-BR').replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' '); }
+export async function getSubjectRequestsForUser(userId: string) { return all<SubjectRequest>(`SELECT sr.*,c.name course_name,i.name institution_name FROM subject_requests sr JOIN courses c ON c.id=sr.course_id JOIN institutions i ON i.id=sr.institution_id WHERE sr.requester_id=? ORDER BY sr.created_at DESC`, userId); }
+export async function getPendingSubjectRequests() { return all<SubjectRequest>(`SELECT sr.*,u.name requester_name,c.name course_name,i.name institution_name FROM subject_requests sr JOIN users u ON u.id=sr.requester_id JOIN courses c ON c.id=sr.course_id JOIN institutions i ON i.id=sr.institution_id WHERE sr.status='PENDING' ORDER BY sr.created_at ASC`); }
+export async function createUser(name: string, email: string, password: string, institutionId: number, courseId: number) { const id = randomUUID(); await execute('INSERT INTO users (id,name,email,password_hash,institution_id,course_id) VALUES (?,?,?,?,?,?)',id,name,email,hashPassword(password),institutionId,courseId); return id; }

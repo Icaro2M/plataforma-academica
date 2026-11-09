@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { CheckCircle2, MessageCircle, ShieldCheck } from 'lucide-react';
-import { all, getFollowedSubjects, getUserStats, type User } from '@/lib/store';
+import { getFollowedSubjects, getUserStats, type User } from '@/lib/store';
+import { all } from '@/lib/db';
 import { requestRole } from '@/app/actions';
 
 type SubjectActivity = { id: number; name: string; code: string; course_name: string; questions: number; answers: number };
@@ -9,16 +10,19 @@ type RecentAnswer = { question_id: string; title: string; subject_name: string; 
 type RoleRequest = { requested_role: string; status: string; created_at: string };
 const dateLabel = (date: string) => new Date(`${date}Z`).toLocaleDateString('pt-BR');
 
-export function ProfileView({ user, own = false, error, success }: { user: User; own?: boolean; error?: string; success?: string }) {
-  const stats = getUserStats(user.id);
-  const subjects = all<SubjectActivity>(`SELECT s.id,s.name,s.code,c.name course_name,
+export async function ProfileView({ user, own = false, error, success }: { user: User; own?: boolean; error?: string; success?: string }) {
+  const [stats, subjects, questions, answers, followed, roleRequests] = await Promise.all([
+    getUserStats(user.id),
+    all<SubjectActivity>(`SELECT s.id,s.name,s.code,c.name course_name,
     (SELECT count(*) FROM questions q WHERE q.subject_id=s.id AND q.author_id=? AND q.status IN ('OPEN','RESOLVED')) questions,
     (SELECT count(*) FROM answers a JOIN questions q ON q.id=a.question_id WHERE q.subject_id=s.id AND a.author_id=? AND a.status='APPROVED') answers
-    FROM subjects s JOIN courses c ON c.id=s.course_id WHERE questions>0 OR answers>0 ORDER BY answers DESC,questions DESC,s.name`, user.id, user.id);
-  const questions = all<RecentQuestion>(`SELECT q.id,q.title,s.name subject_name,q.status,q.created_at FROM questions q JOIN subjects s ON s.id=q.subject_id WHERE q.author_id=? AND q.status IN ('OPEN','RESOLVED') ORDER BY q.created_at DESC LIMIT 4`, user.id);
-  const answers = all<RecentAnswer>(`SELECT a.question_id,q.title,s.name subject_name,(q.accepted_answer_id=a.id) accepted,a.created_at FROM answers a JOIN questions q ON q.id=a.question_id JOIN subjects s ON s.id=q.subject_id WHERE a.author_id=? AND a.status='APPROVED' AND q.status IN ('OPEN','RESOLVED') ORDER BY a.created_at DESC LIMIT 4`, user.id);
-  const followed = own ? getFollowedSubjects(user.id) : [];
-  const roleRequest = own ? all<RoleRequest>('SELECT requested_role,status,created_at FROM role_requests WHERE user_id=? ORDER BY created_at DESC LIMIT 1', user.id)[0] : undefined;
+    FROM subjects s JOIN courses c ON c.id=s.course_id WHERE questions>0 OR answers>0 ORDER BY answers DESC,questions DESC,s.name`, user.id, user.id),
+    all<RecentQuestion>(`SELECT q.id,q.title,s.name subject_name,q.status,q.created_at FROM questions q JOIN subjects s ON s.id=q.subject_id WHERE q.author_id=? AND q.status IN ('OPEN','RESOLVED') ORDER BY q.created_at DESC LIMIT 4`, user.id),
+    all<RecentAnswer>(`SELECT a.question_id,q.title,s.name subject_name,(q.accepted_answer_id=a.id) accepted,a.created_at FROM answers a JOIN questions q ON q.id=a.question_id JOIN subjects s ON s.id=q.subject_id WHERE a.author_id=? AND a.status='APPROVED' AND q.status IN ('OPEN','RESOLVED') ORDER BY a.created_at DESC LIMIT 4`, user.id),
+    own ? getFollowedSubjects(user.id) : Promise.resolve([]),
+    own ? all<RoleRequest>('SELECT requested_role,status,created_at FROM role_requests WHERE user_id=? ORDER BY created_at DESC LIMIT 1', user.id) : Promise.resolve([]),
+  ]);
+  const roleRequest = roleRequests[0];
   const role = user.role === 'MONITOR' ? 'Monitor' : user.role === 'PROFESSOR' ? 'Professor' : user.role === 'ADMIN' ? 'Coordenação' : 'Aluno';
   return <div className="mx-auto max-w-5xl px-5 py-8 md:px-10">
     {error && <p role="alert" className="mb-4 rounded-lg bg-red-50 p-4 text-sm text-red-700">{error}</p>}

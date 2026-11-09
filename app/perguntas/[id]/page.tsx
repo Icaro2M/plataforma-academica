@@ -15,11 +15,11 @@ export default async function QuestionPage({ params, searchParams }: { params: P
   const { id } = await params;
   const { error, success, created, answered } = await searchParams;
   const user = await currentUser();
-  const question = getQuestion(id);
+  const question = await getQuestion(id);
   if (!question || (['PENDING', 'REMOVED'].includes(question.status) && user?.id !== question.author_id && user?.role !== 'ADMIN')) notFound();
-  const answers = getAnswers(id);
+  const answers = await getAnswers(id);
   const isOwner = user?.id === question.author_id;
-  const saved = user ? isQuestionSaved(user.id, question.id) : false;
+  const saved = user ? await isQuestionSaved(user.id, question.id) : false;
   return <div className="mx-auto max-w-4xl px-5 py-8 md:px-10">
     {created === '1' && <ClearQuestionDraft/>}
     <Link href="/" className="text-sm font-semibold text-slate-500">← Voltar ao fórum</Link>
