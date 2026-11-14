@@ -175,7 +175,8 @@ export async function ensureSchema() {
   return globalDb.conectaSchema;
 }
 export async function execute(sql:string,...args:SqlValue[]) { await ensureSchema(); return database().execute({sql,args}); }
-export async function all<T>(sql:string,...args:SqlValue[]):Promise<T[]> { return (await execute(sql,...args)).rows as unknown as T[]; }
+// Converte as linhas do libSQL (instâncias de Row) em objetos simples, que podem ir para Client Components.
+export async function all<T>(sql:string,...args:SqlValue[]):Promise<T[]> { const result = await execute(sql,...args); return result.rows.map(row => Object.fromEntries(result.columns.map((column,index) => [column,row[index]]))) as T[]; }
 export async function one<T>(sql:string,...args:SqlValue[]):Promise<T|undefined> { return (await all<T>(sql,...args))[0]; }
 export async function transaction<T>(work:(tx:SqlConnection)=>Promise<T>) { await ensureSchema(); const tx=await database().transaction('write'); try { const result=await work(tx); await tx.commit(); return result; } catch(error) { if(!tx.closed) await tx.rollback(); throw error; } finally { tx.close(); } }
 export async function run(connection:SqlConnection,sql:string,...args:SqlValue[]) { return connection.execute({sql,args}); }
