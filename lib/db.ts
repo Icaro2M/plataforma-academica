@@ -1,6 +1,7 @@
 import 'server-only';
-import { createClient, type Client, type InValue, type Transaction } from '@libsql/client';
+import { createClient, type Client, type InStatement, type InValue, type Transaction } from '@libsql/client';
 import { randomUUID, scryptSync } from 'node:crypto';
+import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 
 export type SqlValue = InValue;
@@ -10,7 +11,11 @@ const localPath = process.env.ACADEMIA_DB_PATH ? path.resolve(process.env.ACADEM
 const url = process.env.TURSO_DATABASE_URL || `file:${localPath}`;
 const globalDb = globalThis as typeof globalThis & { conectaDb?: Client; conectaSchema?: Promise<void> };
 
-export function database() { return globalDb.conectaDb ??= createClient({ url, ...(process.env.TURSO_AUTH_TOKEN ? { authToken: process.env.TURSO_AUTH_TOKEN } : {}) }); }
+export function database() {
+  // Banco local: garante que a pasta exista (data/ não é versionada).
+  if (!globalDb.conectaDb && !process.env.TURSO_DATABASE_URL) mkdirSync(path.dirname(localPath), { recursive: true });
+  return globalDb.conectaDb ??= createClient({ url, ...(process.env.TURSO_AUTH_TOKEN ? { authToken: process.env.TURSO_AUTH_TOKEN } : {}) });
+}
 export function closeDatabaseForTests() {
   globalDb.conectaDb?.close();
   delete globalDb.conectaDb;
@@ -40,39 +45,138 @@ CREATE TABLE IF NOT EXISTS subject_requests (id TEXT PRIMARY KEY, requester_id T
 CREATE UNIQUE INDEX IF NOT EXISTS one_pending_role_request ON role_requests(user_id) WHERE status='PENDING'; CREATE INDEX IF NOT EXISTS questions_feed_idx ON questions(status,created_at DESC); CREATE INDEX IF NOT EXISTS answers_question_idx ON answers(question_id,status); CREATE INDEX IF NOT EXISTS reports_status_idx ON reports(status,created_at); CREATE INDEX IF NOT EXISTS question_saves_user_idx ON question_saves(user_id,created_at DESC); CREATE INDEX IF NOT EXISTS subject_follows_user_idx ON subject_follows(user_id,created_at DESC); CREATE INDEX IF NOT EXISTS notifications_user_idx ON notifications(user_id,read_at,created_at DESC); CREATE UNIQUE INDEX IF NOT EXISTS notifications_event_unique ON notifications(user_id,type,entity_id,actor_id); CREATE INDEX IF NOT EXISTS conversation_members_user_idx ON conversation_members(user_id,conversation_id); CREATE INDEX IF NOT EXISTS chat_messages_conversation_idx ON chat_messages(conversation_id,created_at); CREATE INDEX IF NOT EXISTS study_requests_conversation_idx ON study_requests(conversation_id,status,created_at DESC); CREATE UNIQUE INDEX IF NOT EXISTS one_pending_subject_request ON subject_requests(course_id,normalized_name) WHERE status='PENDING'; CREATE INDEX IF NOT EXISTS subject_requests_requester_idx ON subject_requests(requester_id,created_at DESC); CREATE INDEX IF NOT EXISTS subject_requests_status_idx ON subject_requests(status,created_at);
 `;
 
-const catalog = `
-INSERT OR IGNORE INTO institutions (id,name,kind,city) VALUES (1,'Universidade de Fortaleza','Faculdade','Fortaleza');
-INSERT OR IGNORE INTO courses (institution_id,name) VALUES (1,'Ciência da Computação'),(1,'Direito'),(1,'Medicina'),(1,'Psicologia');
-INSERT OR IGNORE INTO subjects (course_id,name,code) SELECT id,'Raciocínio Lógico','CC101' FROM courses WHERE institution_id=1 AND name='Ciência da Computação';
-INSERT OR IGNORE INTO subjects (course_id,name,code) SELECT id,'Programação','CC102' FROM courses WHERE institution_id=1 AND name='Ciência da Computação';
-INSERT OR IGNORE INTO subjects (course_id,name,code) SELECT id,'Algoritmos e Estruturas de Dados','CC203' FROM courses WHERE institution_id=1 AND name='Ciência da Computação';
-INSERT OR IGNORE INTO subjects (course_id,name,code) SELECT id,'Banco de Dados','CC204' FROM courses WHERE institution_id=1 AND name='Ciência da Computação';
-INSERT OR IGNORE INTO subjects (course_id,name,code) SELECT id,'Direito Constitucional','DIR102' FROM courses WHERE institution_id=1 AND name='Direito';
-INSERT OR IGNORE INTO subjects (course_id,name,code) SELECT id,'Direito Civil','DIR103' FROM courses WHERE institution_id=1 AND name='Direito';
-INSERT OR IGNORE INTO subjects (course_id,name,code) SELECT id,'Anatomia Humana','MED101' FROM courses WHERE institution_id=1 AND name='Medicina';
-INSERT OR IGNORE INTO subjects (course_id,name,code) SELECT id,'Fisiologia','MED102' FROM courses WHERE institution_id=1 AND name='Medicina';
-INSERT OR IGNORE INTO subjects (course_id,name,code) SELECT id,'Psicologia Geral','PSI101' FROM courses WHERE institution_id=1 AND name='Psicologia';
-INSERT OR IGNORE INTO subjects (course_id,name,code) SELECT id,'Neuroanatomia','PSI102' FROM courses WHERE institution_id=1 AND name='Psicologia';
+// Tabelas criadas depois das colunas novas existirem (índices dependem de addMissingColumns).
+const schemaAfterColumns = `
+CREATE UNIQUE INDEX IF NOT EXISTS users_cpf_unique ON users(cpf) WHERE cpf IS NOT NULL;
+CREATE TABLE IF NOT EXISTS institution_managers (user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, institution_id INTEGER NOT NULL REFERENCES institutions(id) ON DELETE CASCADE, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(user_id,institution_id));
+CREATE TABLE IF NOT EXISTS monitor_roster (id TEXT PRIMARY KEY, institution_id INTEGER NOT NULL REFERENCES institutions(id), full_name TEXT NOT NULL, cpf TEXT NOT NULL, birth_date TEXT, registration TEXT, email TEXT COLLATE NOCASE, course_id INTEGER REFERENCES courses(id), subject_id INTEGER NOT NULL REFERENCES subjects(id), created_by TEXT REFERENCES users(id) ON DELETE SET NULL, linked_user_id TEXT REFERENCES users(id) ON DELETE SET NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(institution_id,cpf,subject_id));
+CREATE TABLE IF NOT EXISTS monitor_subjects (user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, subject_id INTEGER NOT NULL REFERENCES subjects(id) ON DELETE CASCADE, source TEXT NOT NULL DEFAULT 'MANUAL' CHECK(source IN ('ROSTER','REQUEST','MANUAL')), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(user_id,subject_id));
+CREATE INDEX IF NOT EXISTS monitor_roster_institution_idx ON monitor_roster(institution_id,full_name);
+CREATE INDEX IF NOT EXISTS monitor_roster_email_idx ON monitor_roster(institution_id,email);
+CREATE INDEX IF NOT EXISTS institution_managers_institution_idx ON institution_managers(institution_id);
 `;
-const demoSalt = randomUUID();
-const demoPasswordHash = `${demoSalt}:${scryptSync(process.env.DEMO_PASSWORD || 'demo12345', demoSalt, 64).toString('hex')}`;
-const demoData = `
-INSERT OR IGNORE INTO users (id,name,email,password_hash,role,verified,institution_id,course_id) VALUES ('demo-aluna','Marina Alves','aluna@demo.local','${demoPasswordHash}','STUDENT',0,1,1),('demo-monitor','Pedro Santos','monitor@demo.local','${demoPasswordHash}','MONITOR',1,1,1),('demo-professora','Ana Clara','professora@demo.local','${demoPasswordHash}','PROFESSOR',1,1,1);
-INSERT OR IGNORE INTO questions (id,author_id,subject_id,title,body,status,accepted_answer_id) VALUES ('demo-q1','demo-aluna',2,'Integral dupla','Pergunta demonstrativa para testes de persistência e paginação.','RESOLVED','demo-a1'),('demo-q2','demo-aluna',1,'Ponteiros e referências','Pergunta demonstrativa para testes de persistência e paginação.','OPEN',NULL);
-INSERT OR IGNORE INTO answers (id,question_id,author_id,body,status) VALUES ('demo-a1','demo-q1','demo-professora','Resposta demonstrativa aprovada.','APPROVED');
-`;
+
+/** Colunas acrescentadas depois da primeira versão do schema. Nunca remova itens desta lista. */
+export const addedColumns: Record<string, [column: string, definition: string][]> = {
+  institutions: [['acronym', 'TEXT']],
+  users: [['full_name', 'TEXT'], ['cpf', 'TEXT'], ['birth_date', 'TEXT'], ['registration', 'TEXT'], ['student_mode', 'INTEGER NOT NULL DEFAULT 0']],
+  role_requests: [['full_name', 'TEXT'], ['cpf', 'TEXT'], ['birth_date', 'TEXT'], ['registration', 'TEXT'], ['course_id', 'INTEGER'], ['subject_id', 'INTEGER'], ['roster_match', 'INTEGER NOT NULL DEFAULT 0'], ['reviewed_by', 'TEXT']],
+  questions: [['posted_as', 'TEXT']],
+  answers: [['posted_as', 'TEXT']],
+};
+
+/** Migração sem perda de dados: confere PRAGMA table_info e só roda ALTER TABLE ADD COLUMN para colunas ausentes. */
+export async function addMissingColumns(connection: SqlConnection = database()) {
+  const added: string[] = [];
+  for (const [table, columns] of Object.entries(addedColumns)) {
+    const existing = new Set((await connection.execute(`PRAGMA table_info(${table})`)).rows.map(row => String(row.name)));
+    for (const [column, definition] of columns) {
+      if (existing.has(column)) continue;
+      await connection.execute(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+      added.push(`${table}.${column}`);
+    }
+  }
+  return added;
+}
+
+type CatalogSubject = { name: string; code: string };
+type CatalogInstitution = { name: string; acronym: string; kind: 'Faculdade' | 'Escola'; city: string; courses: { name: string; subjects: CatalogSubject[] }[] };
+
+/** Catálogo inicial. Os nomes são exemplos para demonstração, sem vínculo oficial com as instituições. */
+export const institutionCatalog: CatalogInstitution[] = [
+  { name: 'Universidade de Fortaleza', acronym: 'UNIFOR', kind: 'Faculdade', city: 'Fortaleza', courses: [
+    { name: 'Ciência da Computação', subjects: [{ name: 'Raciocínio Lógico', code: 'CC101' }, { name: 'Programação', code: 'CC102' }, { name: 'Cálculo I', code: 'CC105' }, { name: 'Algoritmos e Estruturas de Dados', code: 'CC203' }, { name: 'Banco de Dados', code: 'CC204' }] },
+    { name: 'Direito', subjects: [{ name: 'Direito Constitucional', code: 'DIR102' }, { name: 'Direito Civil', code: 'DIR103' }] },
+    { name: 'Medicina', subjects: [{ name: 'Anatomia Humana', code: 'MED101' }, { name: 'Fisiologia', code: 'MED102' }] },
+    { name: 'Psicologia', subjects: [{ name: 'Psicologia Geral', code: 'PSI101' }, { name: 'Neuroanatomia', code: 'PSI102' }] },
+  ] },
+  { name: 'Universidade Federal do Ceará', acronym: 'UFC', kind: 'Faculdade', city: 'Fortaleza', courses: [
+    { name: 'Engenharia Civil', subjects: [{ name: 'Cálculo Diferencial e Integral I', code: 'CB0661' }, { name: 'Resistência dos Materiais', code: 'TD0902' }, { name: 'Mecânica dos Solos', code: 'TD0915' }] },
+    { name: 'Física', subjects: [{ name: 'Física Básica I', code: 'CD0301' }, { name: 'Mecânica Clássica', code: 'CD0320' }, { name: 'Eletromagnetismo', code: 'CD0330' }] },
+    { name: 'Odontologia', subjects: [{ name: 'Anatomia Dental', code: 'OD0101' }, { name: 'Periodontia', code: 'OD0304' }] },
+  ] },
+  { name: 'Universidade Estadual do Ceará', acronym: 'UECE', kind: 'Faculdade', city: 'Fortaleza', courses: [
+    { name: 'Ciências Biológicas', subjects: [{ name: 'Biologia Celular', code: 'BIO110' }, { name: 'Genética', code: 'BIO220' }, { name: 'Ecologia', code: 'BIO310' }] },
+    { name: 'Pedagogia', subjects: [{ name: 'Didática', code: 'PED120' }, { name: 'Psicologia da Educação', code: 'PED130' }] },
+    { name: 'Geografia', subjects: [{ name: 'Cartografia', code: 'GEO101' }, { name: 'Geomorfologia', code: 'GEO205' }] },
+  ] },
+  { name: 'Centro Universitário Christus', acronym: 'Unichristus', kind: 'Faculdade', city: 'Fortaleza', courses: [
+    { name: 'Arquitetura e Urbanismo', subjects: [{ name: 'Desenho Arquitetônico', code: 'ARQ101' }, { name: 'Teoria da Arquitetura', code: 'ARQ110' }, { name: 'Conforto Ambiental', code: 'ARQ240' }] },
+    { name: 'Fisioterapia', subjects: [{ name: 'Cinesiologia', code: 'FIS101' }, { name: 'Biomecânica', code: 'FIS202' }] },
+    { name: 'Odontologia', subjects: [{ name: 'Histologia Bucal', code: 'ODC102' }, { name: 'Bioquímica', code: 'ODC105' }] },
+  ] },
+  { name: 'Centro Universitário 7 de Setembro', acronym: 'UNI7', kind: 'Faculdade', city: 'Fortaleza', courses: [
+    { name: 'Administração', subjects: [{ name: 'Contabilidade Geral', code: 'ADM110' }, { name: 'Gestão de Pessoas', code: 'ADM210' }, { name: 'Matemática Financeira', code: 'ADM150' }] },
+    { name: 'Sistemas de Informação', subjects: [{ name: 'Lógica de Programação', code: 'SI101' }, { name: 'Engenharia de Software', code: 'SI230' }, { name: 'Redes de Computadores', code: 'SI250' }] },
+  ] },
+];
+
+/** Inserts idempotentes: a instituição é sempre localizada pelo nome, nunca por id fixo. */
+export function catalogStatements(catalog = institutionCatalog): InStatement[] {
+  const statements: InStatement[] = [];
+  for (const institution of catalog) {
+    statements.push({ sql: 'INSERT OR IGNORE INTO institutions (name,kind,city,acronym) VALUES (?,?,?,?)', args: [institution.name, institution.kind, institution.city, institution.acronym] });
+    statements.push({ sql: 'UPDATE institutions SET acronym=? WHERE name=? AND acronym IS NULL', args: [institution.acronym, institution.name] });
+    for (const course of institution.courses) {
+      statements.push({ sql: 'INSERT OR IGNORE INTO courses (institution_id,name) SELECT id,? FROM institutions WHERE name=?', args: [course.name, institution.name] });
+      for (const subject of course.subjects) {
+        statements.push({ sql: 'INSERT OR IGNORE INTO subjects (course_id,name,code) SELECT c.id,?,? FROM courses c JOIN institutions i ON i.id=c.institution_id WHERE i.name=? AND c.name=?', args: [subject.name, subject.code, institution.name, course.name] });
+      }
+    }
+  }
+  return statements;
+}
+
+const UNIFOR = 'Universidade de Fortaleza';
+const UFC = 'Universidade Federal do Ceará';
+function demoStatements(passwordHash: string): InStatement[] {
+  const user = (id: string, name: string, email: string, role: string, verified: number, institution: string, course: string): InStatement => ({
+    sql: 'INSERT OR IGNORE INTO users (id,name,email,password_hash,role,verified,institution_id,course_id) SELECT ?,?,?,?,?,?,c.institution_id,c.id FROM courses c JOIN institutions i ON i.id=c.institution_id WHERE i.name=? AND c.name=?',
+    args: [id, name, email, passwordHash, role, verified, institution, course],
+  });
+  const question = (id: string, author: string, institution: string, code: string, title: string, body: string, status: string, accepted: string | null): InStatement => ({
+    sql: "INSERT OR IGNORE INTO questions (id,author_id,subject_id,title,body,status,accepted_answer_id,posted_as) SELECT ?,?,s.id,?,?,?,?,'STUDENT' FROM subjects s JOIN courses c ON c.id=s.course_id JOIN institutions i ON i.id=c.institution_id WHERE i.name=? AND s.code=?",
+    args: [id, author, title, body, status, accepted, institution, code],
+  });
+  const subjectId = 'SELECT s.id FROM subjects s JOIN courses c ON c.id=s.course_id JOIN institutions i ON i.id=c.institution_id WHERE i.name=? AND s.code=?';
+  return [
+    user('demo-aluna', 'Marina Alves', 'aluna@demo.local', 'STUDENT', 0, UNIFOR, 'Ciência da Computação'),
+    user('demo-monitor', 'Pedro Santos', 'monitor@demo.local', 'MONITOR', 1, UNIFOR, 'Ciência da Computação'),
+    user('demo-professora', 'Ana Clara', 'professora@demo.local', 'PROFESSOR', 1, UNIFOR, 'Ciência da Computação'),
+    user('demo-gestor', 'Helena Duarte', 'gestor@demo.local', 'PROFESSOR', 1, UNIFOR, 'Ciência da Computação'),
+    user('demo-aluno-ufc', 'Lucas Ferreira', 'aluno.ufc@demo.local', 'STUDENT', 0, UFC, 'Engenharia Civil'),
+    { sql: "INSERT OR IGNORE INTO users (id,name,email,password_hash,role,verified) VALUES ('demo-admin','Coordenação Conecta','admin@demo.local',?,'ADMIN',1)", args: [passwordHash] },
+    { sql: 'INSERT OR IGNORE INTO institution_managers (user_id,institution_id) SELECT ?,id FROM institutions WHERE name=?', args: ['demo-gestor', UNIFOR] },
+    { sql: `INSERT OR IGNORE INTO monitor_subjects (user_id,subject_id,source) SELECT 'demo-monitor',(${subjectId}),'MANUAL'`, args: [UNIFOR, 'CC102'] },
+    question('demo-q1', 'demo-aluna', UNIFOR, 'CC105', 'Integral dupla', 'Pergunta demonstrativa para testes de persistência e paginação.', 'RESOLVED', 'demo-a1'),
+    question('demo-q2', 'demo-aluna', UNIFOR, 'CC102', 'Ponteiros e referências', 'Pergunta demonstrativa para testes de persistência e paginação.', 'OPEN', null),
+    question('demo-q-ufc', 'demo-aluno-ufc', UFC, 'TD0902', 'Como calcular a tensão de cisalhamento em uma viga biapoiada?', 'Estou estudando para a prova de Resistência dos Materiais e não entendi como montar o diagrama de esforço cortante para achar a tensão máxima.', 'OPEN', null),
+    { sql: "INSERT OR IGNORE INTO answers (id,question_id,author_id,body,status,posted_as) VALUES ('demo-a1','demo-q1','demo-professora','Resposta demonstrativa aprovada.','APPROVED','PROFESSOR')", args: [] },
+  ];
+}
+
+const demoEnabled = () => !process.env.TURSO_DATABASE_URL || process.env.DEMO_MODE === '1';
+function demoPasswordHash() {
+  const salt = randomUUID();
+  return `${salt}:${scryptSync(process.env.DEMO_PASSWORD || 'demo12345', salt, 64).toString('hex')}`;
+}
+
 export async function ensureSchema() {
   if (!globalDb.conectaSchema) {
-    globalDb.conectaSchema = database().executeMultiple(schema)
-      .then(() => database().executeMultiple(catalog))
-      .then(async () => {
-        if (!process.env.TURSO_DATABASE_URL || process.env.DEMO_MODE === '1') await database().executeMultiple(demoData);
-      });
+    globalDb.conectaSchema = (async () => {
+      const db = database();
+      await db.executeMultiple(schema);
+      await addMissingColumns(db);
+      await db.executeMultiple(schemaAfterColumns);
+      await db.batch(catalogStatements(), 'write');
+      if (demoEnabled()) await db.batch(demoStatements(demoPasswordHash()), 'write');
+    })().catch(error => { delete globalDb.conectaSchema; throw error; });
   }
   return globalDb.conectaSchema;
 }
 export async function execute(sql:string,...args:SqlValue[]) { await ensureSchema(); return database().execute({sql,args}); }
-export async function all<T>(sql:string,...args:SqlValue[]):Promise<T[]> { return (await execute(sql,...args)).rows as unknown as T[]; }
+// Converte as linhas do libSQL (instâncias de Row) em objetos simples, que podem ir para Client Components.
+export async function all<T>(sql:string,...args:SqlValue[]):Promise<T[]> { const result = await execute(sql,...args); return result.rows.map(row => Object.fromEntries(result.columns.map((column,index) => [column,row[index]]))) as T[]; }
 export async function one<T>(sql:string,...args:SqlValue[]):Promise<T|undefined> { return (await all<T>(sql,...args))[0]; }
 export async function transaction<T>(work:(tx:SqlConnection)=>Promise<T>) { await ensureSchema(); const tx=await database().transaction('write'); try { const result=await work(tx); await tx.commit(); return result; } catch(error) { if(!tx.closed) await tx.rollback(); throw error; } finally { tx.close(); } }
 export async function run(connection:SqlConnection,sql:string,...args:SqlValue[]) { return connection.execute({sql,args}); }

@@ -4,7 +4,10 @@ import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import type { Route } from 'next';
 import { currentUser, endSession, startSession } from '@/lib/auth';
-import { createNotification, getQuestion, getUser, normalizeSubjectName, createUser, verifyPassword } from '@/lib/store';
+import { createNotification, getQuestion, getUser, isInstitutionManager, normalizeSubjectName, createUser, verifyPassword } from '@/lib/store';
+import { actingRole, canAccessInstitution } from '@/lib/roles';
+import { validateVerification } from '@/lib/verification';
+import { autoVerifyByEmail, endMonitorship, findRosterMatch, linkRosterToUser, readRosterFile, saveRosterEntries, type ImportResult } from '@/lib/monitors';
 import { isStudyChatContent, moderateContent } from '@/lib/moderation';
 import { all as asyncAll, execute, one as asyncOne, transaction, run } from '@/lib/db';
 
@@ -13,6 +16,15 @@ const errorUrl = (path: string, message: string) => `${path}?error=${encodeURICo
 const requireUser = async () => { const user = await currentUser(); if (!user) redirect(errorUrl('/entrar','Entre para participar.')); return user; };
 const requireAdmin = async () => { const user = await requireUser(); if (user.role !== 'ADMIN') redirect('/'); return user; };
 const returnPath = (form: FormData, fallback: string) => { const path = value(form,'returnTo'); return (path.startsWith('/') && !path.startsWith('//') ? path : fallback) as Route; };
+const withMessage = (path: string, key: 'error' | 'success', message: string) => `${path}${path.includes('?') ? '&' : '?'}${key}=${encodeURIComponent(message)}` as Route;
+/** Gestor da instituição ou ADMIN. */
+const requireManager = async (institutionId: number) => {
+  const user = await requireUser();
+  if (!Number.isSafeInteger(institutionId) || institutionId < 1) redirect('/');
+  if (user.role === 'ADMIN' || await isInstitutionManager(user.id, institutionId)) return user;
+  redirect('/');
+};
+const gestorPath = (institutionId: number) => `/gestor?instituicao=${institutionId}`;
 
 export async function login(form: FormData) {
   const email = value(form,'email').toLowerCase();
@@ -33,6 +45,8 @@ export async function register(form: FormData) {
   if (!course) redirect(errorUrl('/cadastrar','Selecione um curso da instituição escolhida.'));
   if (await asyncOne('SELECT id FROM users WHERE email=?',email)) redirect(errorUrl('/cadastrar','Este e-mail já está cadastrado.'));
   const id = await createUser(name,email,password,institutionId,courseId);
+  // (b) quem consta na planilha de monitores com o mesmo e-mail já entra verificado.
+  await autoVerifyByEmail(id);
   await startSession(id);
   redirect('/');
 }
@@ -49,7 +63,7 @@ export async function createQuestion(form: FormData) {
   const moderation = moderateContent(`${title} ${body}`,'QUESTION');
   if (moderation.status === 'BLOCKED') redirect(errorUrl('/perguntas/nova',moderation.reason || 'Conteúdo não permitido.'));
   const id = randomUUID();
-  await execute('INSERT INTO questions (id,author_id,subject_id,title,body,status,moderation_reason) VALUES (?,?,?,?,?,?,?)',id,user.id,subjectId,title,body,moderation.status === 'PENDING' ? 'PENDING' : 'OPEN',moderation.reason);
+  await execute('INSERT INTO questions (id,author_id,subject_id,title,body,status,moderation_reason,posted_as) VALUES (?,?,?,?,?,?,?,?)',id,user.id,subjectId,title,body,moderation.status === 'PENDING' ? 'PENDING' : 'OPEN',moderation.reason,actingRole(user));
   revalidatePath('/');
   redirect(`/perguntas/${id}?created=1` as Route);
 }
@@ -59,7 +73,7 @@ export async function createAnswer(form: FormData) {
   const questionId = value(form,'questionId');
   const body = value(form,'body');
   const question = await getQuestion(questionId);
-  if (!question || !['OPEN','RESOLVED'].includes(question.status)) redirect('/');
+  if (!question || !['OPEN','RESOLVED'].includes(question.status) || !canAccessInstitution(user, question.institution_id)) redirect('/');
   if (question.author_id === user.id) redirect(errorUrl(`/perguntas/${questionId}`,'Você não pode responder à própria pergunta.'));
   if (body.length < 10 || body.length > 10000) redirect(errorUrl(`/perguntas/${questionId}`,'A resposta deve ter de 10 a 10.000 caracteres.'));
   const moderation = moderateContent(body,'ANSWER');
@@ -67,7 +81,7 @@ export async function createAnswer(form: FormData) {
   const answerId = randomUUID();
   try {
     await transaction(async tx => {
-      await run(tx,'INSERT INTO answers (id,question_id,author_id,body,status,moderation_reason) VALUES (?,?,?,?,?,?)',answerId,questionId,user.id,body,moderation.status,moderation.reason);
+      await run(tx,'INSERT INTO answers (id,question_id,author_id,body,status,moderation_reason,posted_as) VALUES (?,?,?,?,?,?,?)',answerId,questionId,user.id,body,moderation.status,moderation.reason,actingRole(user));
     });
   } catch { redirect(errorUrl(`/perguntas/${questionId}`,'Não foi possível publicar a resposta.')); }
   revalidatePath(`/perguntas/${questionId}`);
@@ -102,7 +116,8 @@ export async function voteAnswer(form: FormData) {
   const user = await requireUser();
   const answerId = value(form,'answerId');
   const questionId = value(form,'questionId');
-  const answer = await asyncOne<{id:string;author_id:string}>('SELECT id,author_id FROM answers WHERE id=? AND question_id=? AND status=?',answerId,questionId,'APPROVED');
+  const answer = await asyncOne<{id:string;author_id:string;institution_id:number}>('SELECT a.id,a.author_id,c.institution_id FROM answers a JOIN questions q ON q.id=a.question_id JOIN subjects s ON s.id=q.subject_id JOIN courses c ON c.id=s.course_id WHERE a.id=? AND a.question_id=? AND a.status=?',answerId,questionId,'APPROVED');
+  if (answer && !canAccessInstitution(user, answer.institution_id)) redirect('/');
   if (answer && answer.author_id !== user.id) await execute('INSERT OR IGNORE INTO answer_votes (answer_id,user_id) VALUES (?,?)',answerId,user.id);
   revalidatePath(`/perguntas/${questionId}`); revalidatePath('/ranking');
   redirect(`/perguntas/${questionId}` as Route);
@@ -125,8 +140,8 @@ export async function toggleSaveQuestion(form: FormData) {
   const questionId = value(form,'questionId');
   const intent = value(form,'intent');
   const destination = returnPath(form,`/perguntas/${questionId}`);
-  const question = await asyncOne<{id:string}>("SELECT id FROM questions WHERE id=? AND status IN ('OPEN','RESOLVED')",questionId);
-  if (!question) redirect('/');
+  const question = await asyncOne<{id:string;institution_id:number}>("SELECT q.id,c.institution_id FROM questions q JOIN subjects s ON s.id=q.subject_id JOIN courses c ON c.id=s.course_id WHERE q.id=? AND q.status IN ('OPEN','RESOLVED')",questionId);
+  if (!question || !canAccessInstitution(user, question.institution_id)) redirect('/');
   if (intent === 'remove') await execute('DELETE FROM question_saves WHERE user_id=? AND question_id=?',user.id,questionId);
   else await execute('INSERT OR IGNORE INTO question_saves (user_id,question_id) VALUES (?,?)',user.id,questionId);
   revalidatePath('/minha-atividade');
@@ -139,7 +154,8 @@ export async function toggleSubjectFollow(form: FormData) {
   const subjectId = Number(value(form,'subjectId'));
   const intent = value(form,'intent');
   const destination = returnPath(form,`/disciplinas/${subjectId}`);
-  if (!Number.isSafeInteger(subjectId) || !await asyncOne('SELECT id FROM subjects WHERE id=?',subjectId)) redirect('/disciplinas');
+  const subject = Number.isSafeInteger(subjectId) ? await asyncOne<{id:number;institution_id:number}>('SELECT s.id,c.institution_id FROM subjects s JOIN courses c ON c.id=s.course_id WHERE s.id=?',subjectId) : undefined;
+  if (!subject || !canAccessInstitution(user, subject.institution_id)) redirect('/disciplinas');
   if (intent === 'remove') await execute('DELETE FROM subject_follows WHERE user_id=? AND subject_id=?',user.id,subjectId);
   else await execute('INSERT OR IGNORE INTO subject_follows (user_id,subject_id) VALUES (?,?)',user.id,subjectId);
   revalidatePath('/minha-atividade');
@@ -170,7 +186,7 @@ export async function createStudyChat(form: FormData) {
   const subjectId = Number(value(form,'subjectId'));
   const title = value(form,'title');
   const body = value(form,'body');
-  const recipient = await asyncOne<{ id: string; name: string; role: string; verified: number }>("SELECT id,name,role,verified FROM users WHERE id=? AND id<>?",recipientId,user.id);
+  const recipient = await asyncOne<{ id: string; name: string; role: string; verified: number }>("SELECT id,name,role,verified FROM users WHERE id=? AND id<>? AND NOT (role='MONITOR' AND student_mode=1) AND (role='ADMIN' OR institution_id=?)",recipientId,user.id,user.institution_id);
   const subject = await asyncOne<{ id: number; name: string }>('SELECT s.id,s.name FROM subjects s JOIN courses c ON c.id=s.course_id WHERE s.id=? AND c.institution_id=?',subjectId,user.institution_id);
   if (!recipient || !['MONITOR','PROFESSOR','ADMIN'].includes(recipient.role) || (!recipient.verified && recipient.role !== 'ADMIN') || !subject || title.length < 6 || title.length > 120 || body.length < 10 || body.length > 2000) redirect(errorUrl('/mensagens/nova','Escolha um orientador, uma disciplina, um tema de 6 a 120 caracteres e escreva sua dúvida.'));
   if (!isStudyChatContent(`${title} ${body}`,subject.name)) redirect(errorUrl('/mensagens/nova','O chat é exclusivo para dúvidas, aulas e assuntos vinculados à disciplina selecionada.'));
@@ -316,31 +332,114 @@ export async function reviewSubjectRequest(form: FormData) {
 export async function updateRole(form: FormData) {
   const admin = await requireAdmin();
   const id = value(form,'userId'); const role = value(form,'role');
-  if (id !== admin.id && ['STUDENT','MONITOR','PROFESSOR'].includes(role) && await getUser(id)) await execute('UPDATE users SET role=?,verified=? WHERE id=?',role,role === 'STUDENT' ? 0 : 1,id);
+  if (id !== admin.id && ['STUDENT','MONITOR','PROFESSOR'].includes(role) && await getUser(id)) await execute('UPDATE users SET role=?,verified=?,student_mode=0 WHERE id=?',role,role === 'STUDENT' ? 0 : 1,id);
   revalidatePath('/administracao'); revalidatePath('/ranking'); redirect('/administracao');
 }
 export async function requestRole(form: FormData) {
   const user = await requireUser();
   if (user.role !== 'STUDENT') redirect('/perfil');
-  const role = value(form,'role'); const details = value(form,'details');
-  if (!['MONITOR','PROFESSOR'].includes(role) || details.length < 15 || details.length > 500) redirect(errorUrl('/perfil','Informe o papel e um vínculo institucional de 15 a 500 caracteres.'));
+  const institutionId = user.institution_id;
+  if (!institutionId) redirect(errorUrl('/perfil','Sua conta não está vinculada a uma instituição.'));
+  const parsed = validateVerification({ role: value(form,'role'), fullName: value(form,'fullName'), cpf: value(form,'cpf'), birthDate: value(form,'birthDate'), registration: value(form,'registration'), courseId: value(form,'courseId'), subjectId: value(form,'subjectId'), notes: value(form,'notes') });
+  if (!parsed.ok) redirect(errorUrl('/perfil',parsed.errors.join(' ')));
+  const data = parsed.data;
+  if (!await asyncOne('SELECT id FROM courses WHERE id=? AND institution_id=?',data.courseId,institutionId)) redirect(errorUrl('/perfil','Selecione um curso da sua instituição.'));
+  if (data.subjectId && !await asyncOne('SELECT id FROM subjects WHERE id=? AND course_id=?',data.subjectId,data.courseId)) redirect(errorUrl('/perfil','A cadeira da monitoria deve pertencer ao curso escolhido.'));
+  const cpfInUse = await asyncOne('SELECT id FROM users WHERE cpf=? AND id<>?',data.cpf,user.id) || await asyncOne("SELECT id FROM role_requests WHERE cpf=? AND user_id<>? AND status IN ('PENDING','APPROVED')",data.cpf,user.id);
+  if (cpfInUse) redirect(errorUrl('/perfil','Este CPF já está vinculado a outra conta. Procure a coordenação se houver engano.'));
   if (await asyncOne('SELECT id FROM role_requests WHERE user_id=? AND status=?',user.id,'PENDING')) redirect(errorUrl('/perfil','Você já tem uma solicitação em análise.'));
-  await execute('INSERT INTO role_requests (id,user_id,requested_role,details) VALUES (?,?,?,?)',randomUUID(),user.id,role,details);
-  revalidatePath('/perfil'); redirect('/perfil?success=Solicitação+enviada+à+coordenação');
+  // (c) mesmo CPF e matrícula de uma linha da planilha do gestor: verificação automática.
+  const rosterMatches = data.role === 'MONITOR' ? await findRosterMatch(institutionId,data.cpf,data.registration) : [];
+  let saved = true;
+  try {
+    await transaction(async tx => {
+      await run(tx,'UPDATE users SET full_name=?,cpf=?,birth_date=?,registration=? WHERE id=?',data.fullName,data.cpf,data.birthDate,data.registration,user.id);
+      await run(tx,'INSERT INTO role_requests (id,user_id,requested_role,details,full_name,cpf,birth_date,registration,course_id,subject_id,roster_match) VALUES (?,?,?,?,?,?,?,?,?,?,?)',randomUUID(),user.id,data.role,data.notes,data.fullName,data.cpf,data.birthDate,data.registration,data.courseId,data.subjectId,rosterMatches.length ? 1 : 0);
+    });
+  } catch { saved = false; }
+  if (!saved) redirect(errorUrl('/perfil','Não foi possível registrar a solicitação. Confira se o CPF já não está em uso.'));
+  const autoVerified = rosterMatches.length > 0 && await linkRosterToUser(user.id,rosterMatches.map(row => row.id));
+  revalidatePath('/perfil'); revalidatePath('/gestor'); revalidatePath('/administracao');
+  redirect(withMessage('/perfil','success',autoVerified ? 'Você consta na planilha de monitores da instituição e foi verificado automaticamente.' : 'Solicitação enviada para análise.'));
 }
 export async function reviewRoleRequest(form: FormData) {
-  const admin = await requireAdmin();
+  const reviewer = await requireUser();
   const id = value(form,'requestId'); const decision = value(form,'decision');
-  if (!['APPROVE','REJECT'].includes(decision)) redirect('/administracao');
-  const request = await asyncOne<{user_id:string;requested_role:string}>('SELECT user_id,requested_role FROM role_requests WHERE id=? AND status=?',id,'PENDING');
-  if (request) {
-    await transaction(async tx => {
-      if (decision === 'APPROVE') await run(tx,'UPDATE users SET role=?,verified=1 WHERE id=?',request.requested_role,request.user_id);
-      await run(tx,'UPDATE role_requests SET status=?,reviewed_at=CURRENT_TIMESTAMP WHERE id=?',decision === 'APPROVE' ? 'APPROVED' : 'REJECTED',id);
-    });
-    await createNotification(request.user_id,'ROLE_REQUEST_REVIEWED',admin.id,'PROFILE',id,decision === 'APPROVE' ? 'Seu vínculo acadêmico foi aprovado' : 'Sua solicitação de vínculo foi revisada',decision === 'APPROVE' ? 'Seu perfil agora exibe a função verificada.' : 'Consulte seu perfil para enviar uma nova solicitação com dados atualizados.');
-  }
-  revalidatePath('/administracao'); revalidatePath('/ranking'); redirect('/administracao');
+  const destination = returnPath(form,'/administracao');
+  if (!['APPROVE','REJECT'].includes(decision)) redirect(destination);
+  const request = await asyncOne<{user_id:string;requested_role:string;subject_id:number|null;institution_id:number|null}>('SELECT r.user_id,r.requested_role,r.subject_id,u.institution_id FROM role_requests r JOIN users u ON u.id=r.user_id WHERE r.id=? AND r.status=?',id,'PENDING');
+  if (!request) redirect(destination);
+  // ADMIN revisa tudo; o gestor revisa pedidos de monitoria da própria instituição.
+  const allowed = reviewer.role === 'ADMIN' || (request.requested_role === 'MONITOR' && request.institution_id !== null && await isInstitutionManager(reviewer.id,request.institution_id));
+  if (!allowed || request.user_id === reviewer.id) redirect('/');
+  await transaction(async tx => {
+    if (decision === 'APPROVE') {
+      await run(tx,'UPDATE users SET role=?,verified=1,student_mode=0 WHERE id=?',request.requested_role,request.user_id);
+      if (request.requested_role === 'MONITOR' && request.subject_id) await run(tx,"INSERT OR IGNORE INTO monitor_subjects (user_id,subject_id,source) VALUES (?,?,'REQUEST')",request.user_id,request.subject_id);
+    }
+    await run(tx,'UPDATE role_requests SET status=?,reviewed_at=CURRENT_TIMESTAMP,reviewed_by=? WHERE id=?',decision === 'APPROVE' ? 'APPROVED' : 'REJECTED',reviewer.id,id);
+  });
+  await createNotification(request.user_id,'ROLE_REQUEST_REVIEWED',reviewer.id,'PROFILE',id,decision === 'APPROVE' ? 'Seu vínculo acadêmico foi aprovado' : 'Sua solicitação de vínculo foi revisada',decision === 'APPROVE' ? 'Seu perfil agora exibe a função verificada.' : 'Consulte seu perfil para enviar uma nova solicitação com dados atualizados.');
+  revalidatePath('/administracao'); revalidatePath('/gestor'); revalidatePath('/ranking'); redirect(destination);
+}
+export async function switchProfileMode(form: FormData) {
+  const user = await requireUser();
+  const destination = returnPath(form,'/perfil');
+  if (user.role !== 'MONITOR') redirect(destination);
+  await execute('UPDATE users SET student_mode=? WHERE id=?',Number(user.student_mode) === 1 ? 0 : 1,user.id);
+  revalidatePath('/','layout');
+  redirect(destination);
+}
+export async function addInstitutionManager(form: FormData) {
+  await requireAdmin();
+  const email = value(form,'email').toLowerCase(); const institutionId = Number(value(form,'institutionId'));
+  const account = await asyncOne<{id:string}>('SELECT id FROM users WHERE email=?',email);
+  if (!account) redirect(errorUrl('/administracao','Nenhuma conta encontrada com este e-mail.'));
+  if (!await asyncOne('SELECT id FROM institutions WHERE id=?',institutionId)) redirect(errorUrl('/administracao','Selecione uma instituição válida.'));
+  await execute('INSERT OR IGNORE INTO institution_managers (user_id,institution_id) VALUES (?,?)',account.id,institutionId);
+  await createNotification(account.id,'MANAGER_ASSIGNED',null,'INSTITUTION',String(institutionId),'Você agora é gestor de monitoria','Acesse a página Gestor de monitoria no menu.');
+  revalidatePath('/administracao'); redirect('/administracao');
+}
+export async function removeInstitutionManager(form: FormData) {
+  await requireAdmin();
+  await execute('DELETE FROM institution_managers WHERE user_id=? AND institution_id=?',value(form,'userId'),Number(value(form,'institutionId')));
+  revalidatePath('/administracao'); redirect('/administracao');
+}
+const importSummary = (result: ImportResult) => `${result.inserted} monitor(es) cadastrado(s), ${result.updated} atualizado(s), ${result.linked} conta(s) verificada(s) automaticamente.`;
+const importErrors = (result: ImportResult) => result.errors.slice(0,5).map(item => `Linha ${item.line}: ${item.message}`).join(' · ') + (result.errors.length > 5 ? ` · e mais ${result.errors.length - 5} erro(s).` : '');
+export async function importMonitorRoster(form: FormData) {
+  const institutionId = Number(value(form,'institutionId'));
+  const manager = await requireManager(institutionId);
+  const path = gestorPath(institutionId);
+  const file = form.get('file');
+  if (!(file instanceof File) || !file.size) redirect(withMessage(path,'error','Selecione uma planilha .xlsx ou .csv.'));
+  if (file.size > 2 * 1024 * 1024) redirect(withMessage(path,'error','A planilha deve ter no máximo 2 MB.'));
+  const parsed = await readRosterFile(file.name,Buffer.from(await file.arrayBuffer()));
+  if (parsed.error) redirect(withMessage(path,'error',parsed.error));
+  if (!parsed.rows.length) redirect(withMessage(path,'error','A planilha não tem linhas de monitores.'));
+  const result = await saveRosterEntries(institutionId,parsed.rows,manager.id);
+  revalidatePath('/gestor'); revalidatePath('/ranking');
+  const target = withMessage(path,'success',importSummary(result));
+  redirect(result.errors.length ? `${target}&error=${encodeURIComponent(importErrors(result))}` as Route : target);
+}
+export async function addMonitorManually(form: FormData) {
+  const institutionId = Number(value(form,'institutionId'));
+  const manager = await requireManager(institutionId);
+  const path = gestorPath(institutionId);
+  const subject = await asyncOne<{code:string;course_name:string}>('SELECT s.code,c.name course_name FROM subjects s JOIN courses c ON c.id=s.course_id WHERE s.id=? AND c.id=? AND c.institution_id=?',Number(value(form,'subjectId')),Number(value(form,'courseId')),institutionId);
+  if (!subject) redirect(withMessage(path,'error','Selecione curso e disciplina da instituição.'));
+  const result = await saveRosterEntries(institutionId,[{ line: 1, nome: value(form,'fullName'), cpf: value(form,'cpf'), nascimento: value(form,'birthDate'), matricula: value(form,'registration'), email: value(form,'email').toLowerCase(), curso: subject.course_name, disciplina: subject.code }],manager.id);
+  revalidatePath('/gestor');
+  if (result.errors.length) redirect(withMessage(path,'error',`Cadastro manual: ${result.errors[0].message}.`));
+  redirect(withMessage(path,'success',result.linked ? 'Monitor cadastrado e conta verificada automaticamente.' : 'Monitor cadastrado. A conta será verificada quando ele se cadastrar ou pedir verificação.'));
+}
+export async function endMonitorshipAction(form: FormData) {
+  const institutionId = Number(value(form,'institutionId'));
+  await requireManager(institutionId);
+  const rosterId = value(form,'rosterId'); const userId = value(form,'userId');
+  const done = rosterId ? await endMonitorship(institutionId,{ rosterId }) : userId ? await endMonitorship(institutionId,{ userId }) : false;
+  revalidatePath('/gestor'); revalidatePath('/ranking');
+  redirect(withMessage(gestorPath(institutionId),done ? 'success' : 'error',done ? 'Monitoria encerrada.' : 'Registro não encontrado.'));
 }
 export async function reviewContent(form: FormData) {
   const admin = await requireAdmin();
