@@ -5,15 +5,21 @@ import { SubjectSymbol } from '@/components/subject-symbol';
 import { SubjectRequestForm } from '@/components/subject-request-form';
 import { currentUser } from '@/lib/auth';
 import { getCourses, getInstitutions, getSubjectCatalog, getSubjectRequestsForUser } from '@/lib/store';
+import { institutionScope } from '@/lib/roles';
 
 type Filters = { busca?: string; instituicao?: string; curso?: string };
 const fold = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('pt-BR');
 
 export default async function SubjectsPage({ searchParams }: { searchParams: Promise<Filters> }) {
   const raw = await searchParams;
-  const [institutions, courses] = await Promise.all([getInstitutions(), getCourses()]);
-  const subjects = await getSubjectCatalog();
   const user = await currentUser();
+  // Logado (exceto ADMIN): catálogo apenas da própria instituição.
+  const scope = institutionScope(user);
+  const inScope = (id: number) => scope === undefined || id === scope;
+  const [allInstitutions, allCourses, allSubjects] = await Promise.all([getInstitutions(), getCourses(), getSubjectCatalog()]);
+  const institutions = allInstitutions.filter(item => inScope(item.id));
+  const courses = allCourses.filter(item => inScope(item.institution_id));
+  const subjects = allSubjects.filter(item => inScope(item.institution_id));
   const userCourses = user?.institution_id ? courses.filter(course => course.institution_id === user.institution_id) : [];
   const userRequests = user ? await getSubjectRequestsForUser(user.id) : [];
   const search = typeof raw.busca === 'string' ? raw.busca.trim().slice(0, 80) : '';
@@ -35,7 +41,7 @@ export default async function SubjectsPage({ searchParams }: { searchParams: Pro
 
     <form action="/disciplinas" className="mt-7 grid grid-cols-2 gap-3 rounded-lg border border-line bg-white p-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1fr)_auto]">
       <label className="col-span-2 min-w-0 lg:col-span-1"><span className="mb-1.5 block text-[11px] font-semibold text-[#526178]">Buscar disciplina</span><span className="relative block"><Search aria-hidden="true" size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#8b98ab]"/><input type="search" name="busca" defaultValue={search} maxLength={80} placeholder="Nome, código ou curso" className="h-10 w-full rounded-md border border-line bg-white pl-9 pr-3 text-[12px] text-ink placeholder:text-[#96a1b0]"/></span></label>
-      <label><span className="mb-1.5 block text-[11px] font-semibold text-[#526178]">Instituição</span><select name="instituicao" defaultValue={institutionId || ''} className="h-10 w-full rounded-md border border-line bg-white px-3 text-[12px] text-ink"><option value="">Todas as instituições</option>{institutions.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+      <label><span className="mb-1.5 block text-[11px] font-semibold text-[#526178]">Instituição</span><select name="instituicao" defaultValue={institutionId || ''} className="h-10 w-full rounded-md border border-line bg-white px-3 text-[12px] text-ink"><option value="">{scope === undefined ? 'Todas as instituições' : 'Minha instituição'}</option>{institutions.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
       <label><span className="mb-1.5 block text-[11px] font-semibold text-[#526178]">Curso</span><select name="curso" defaultValue={courseId || ''} className="h-10 w-full rounded-md border border-line bg-white px-3 text-[12px] text-ink"><option value="">Todos os cursos</option>{courses.map(item => <option key={item.id} value={item.id}>{item.name} · {item.institution_name}</option>)}</select></label>
       <button type="submit" className="col-span-2 h-10 self-end rounded-md bg-brand px-5 text-[12px] font-semibold text-white transition-colors hover:bg-[#304e81] lg:col-span-1">Aplicar filtros</button>
     </form>

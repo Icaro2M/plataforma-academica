@@ -3,10 +3,11 @@
 import Link from 'next/link';
 import type { Route } from 'next';
 import { usePathname } from 'next/navigation';
-import { Bell, BookOpenText, House, LogOut, Medal, Menu, MessageCircle, ShieldCheck, UserRound, X } from 'lucide-react';
+import { Bell, BookOpenText, ClipboardList, House, LogOut, Medal, Menu, MessageCircle, ShieldCheck, UserRound, X } from 'lucide-react';
 import { useState } from 'react';
 import { logout } from '@/app/actions';
 import type { User } from '@/lib/store';
+import { ProfileModeButton } from './profile-mode-button';
 
 const mainLinks = [
   { href: '/', label: 'Perguntas', icon: House },
@@ -21,8 +22,10 @@ function NavContent({ user, unreadNotifications, unreadChats, onNavigate }: { us
     ...(user ? [{ href: '/minha-atividade', label: 'Minha atividade', icon: UserRound }] : []),
     ...(user ? [{ href: '/mensagens', label: 'Conversas', icon: MessageCircle }] : []),
     ...(user ? [{ href: '/notificacoes', label: 'Notificações', icon: Bell }] : []),
+    ...(user && (user.role === 'ADMIN' || user.managed_institution_id) ? [{ href: '/gestor', label: 'Gestor de monitoria', icon: ClipboardList }] : []),
     ...(user?.role === 'ADMIN' ? [{ href: '/administracao', label: 'Administração', icon: ShieldCheck }] : []),
   ];
+  const studentMode = user?.role === 'MONITOR' && Number(user.student_mode) === 1;
   return <>
     <p className="px-3 pb-2 pt-5 text-[10px] font-bold uppercase tracking-[.15em] text-muted">Navegação</p>
     <nav aria-label="Navegação principal" className="space-y-1">
@@ -35,6 +38,7 @@ function NavContent({ user, unreadNotifications, unreadChats, onNavigate }: { us
     <div className="mx-3 mt-7 border-t border-line pt-5">
       <p className="text-[10px] font-bold uppercase tracking-[.15em] text-muted">Sua conta</p>
       <Link href={user ? '/perfil' : '/entrar'} onClick={onNavigate} className={`mt-3 flex items-center gap-3 rounded-lg px-3 py-2.5 text-[13px] font-medium transition-colors ${pathname === '/perfil' || pathname === '/entrar' ? 'bg-[#edf2ff] text-accent' : 'text-[#536178] hover:bg-[#f3f5f9] hover:text-ink'}`}><UserRound size={17} strokeWidth={1.8}/>{user ? 'Meu perfil' : 'Entrar ou cadastrar'}</Link>
+      {user?.role === 'MONITOR' && <div className="mt-2 rounded-lg border border-line bg-[#fafbfc] p-1.5"><p className="px-1.5 pt-1 text-[10px] font-semibold uppercase tracking-[.1em] text-muted">Perfil em uso: {studentMode ? 'aluno' : 'monitor'}</p><ProfileModeButton studentMode={studentMode} returnTo={pathname} compact/></div>}
     </div>
   </>;
 }
@@ -55,7 +59,7 @@ export function Sidebar({ user, unreadNotifications = 0, unreadChats = 0 }: { us
     <aside className="sticky top-0 hidden h-screen w-[232px] shrink-0 flex-col border-r border-line bg-white lg:flex">
       <div className="flex h-[72px] items-center border-b border-line px-6"><Brand/></div>
       <div className="flex-1 overflow-y-auto px-3"><NavContent user={user} unreadNotifications={unreadNotifications} unreadChats={unreadChats}/><div className="mx-3 mt-8 rounded-lg border border-line bg-[#fafbfc] px-3.5 py-3"><p className="text-[11px] font-semibold text-brand">Aprendizado em comunidade</p><p className="mt-1 text-[11px] leading-[1.5] text-muted">Perguntas e conversas organizadas por curso e disciplina.</p></div></div>
-      <div className="border-t border-line px-5 py-4">{user ? <div className="flex items-center gap-2.5"><Link href="/perfil" className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[#e8ecf6] text-[10px] font-bold text-brand">{user.name.slice(0,2).toUpperCase()}</Link><Link href="/perfil" className="min-w-0 flex-1"><span className="block truncate text-xs font-semibold text-ink">{user.name}</span><span className="block truncate text-[11px] text-muted">{user.institution_name || (user.role === 'STUDENT' ? 'Aluno' : user.role === 'MONITOR' ? 'Monitor' : user.role === 'PROFESSOR' ? 'Professor' : 'Administrador')}</span></Link><form action={logout}><button title="Sair da conta" aria-label="Sair da conta" className="rounded-md p-1.5 text-muted hover:bg-cream hover:text-ink"><LogOut size={16}/></button></form></div> : <Link href="/entrar" className="flex items-center gap-2 text-xs font-semibold text-brand hover:text-accent"><UserRound size={17}/> Entre para participar</Link>}</div>
+      <div className="border-t border-line px-5 py-4">{user ? <div className="flex items-center gap-2.5"><Link href="/perfil" className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[#e8ecf6] text-[10px] font-bold text-brand">{user.name.slice(0,2).toUpperCase()}</Link><Link href="/perfil" className="min-w-0 flex-1"><span className="block truncate text-xs font-semibold text-ink">{user.name}</span><span className="block truncate text-[11px] text-muted">{user.institution_name || (user.role === 'STUDENT' ? 'Aluno' : user.role === 'MONITOR' ? (Number(user.student_mode) === 1 ? 'Monitor · perfil de aluno' : 'Monitor') : user.role === 'PROFESSOR' ? 'Professor' : 'Administrador')}</span></Link><form action={logout}><button title="Sair da conta" aria-label="Sair da conta" className="rounded-md p-1.5 text-muted hover:bg-cream hover:text-ink"><LogOut size={16}/></button></form></div> : <Link href="/entrar" className="flex items-center gap-2 text-xs font-semibold text-brand hover:text-accent"><UserRound size={17}/> Entre para participar</Link>}</div>
     </aside>
   </>;
 }

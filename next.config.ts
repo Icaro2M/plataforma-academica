@@ -3,6 +3,9 @@ import type { NextConfig } from 'next';
 const nextConfig: NextConfig = {
   typedRoutes: true,
   output: 'standalone',
+  // A planilha de monitores (.xlsx/.csv) é enviada por Server Action; o limite padrão é 1 MB.
+  experimental: { serverActions: { bodySizeLimit: '3mb' } },
+  serverExternalPackages: ['read-excel-file'],
   async headers() {
     return [{
       source: '/:path*',

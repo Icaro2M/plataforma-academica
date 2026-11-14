@@ -26,9 +26,37 @@ describe('persistência libSQL da comunidade acadêmica', () => {
   it('cria o esquema e o catálogo acadêmico inicial', async () => {
     const tables = await db.all<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('questions','answers','sessions','subjects','users') ORDER BY name");
     expect(tables.map(table => table.name)).toEqual(['answers', 'questions', 'sessions', 'subjects', 'users']);
-    expect(await store.countQuestions()).toBe(2);
+    expect(await store.countQuestions()).toBe(3);
     expect((await store.getCoursesForInstitution(1)).map(course => course.name)).toEqual(expect.arrayContaining(['Ciência da Computação','Direito','Medicina','Psicologia']));
     expect((await store.getSubjectsForInstitution(1)).filter(subject => subject.course_name === 'Direito').map(subject => subject.name)).toEqual(expect.arrayContaining(['Direito Constitucional','Direito Civil']));
+  });
+
+  it('cadastra cinco instituições com cursos e disciplinas próprios', async () => {
+    const institutions = await store.getInstitutions();
+    expect(institutions.map(item => item.acronym).sort()).toEqual(['UECE','UFC','UNI7','UNIFOR','Unichristus']);
+    const subjectsBy = async (acronym: string) => new Set((await store.getSubjectsForInstitution(institutions.find(item => item.acronym === acronym)!.id)).map(subject => subject.code));
+    const [unifor, ufc] = await Promise.all([subjectsBy('UNIFOR'), subjectsBy('UFC')]);
+    expect(ufc.has('TD0902')).toBe(true);
+    expect([...ufc].some(code => unifor.has(code))).toBe(false);
+  });
+
+  it('migra sem apagar dados e repete o seed sem duplicar', async () => {
+    expect(await db.addMissingColumns()).toEqual([]);
+    const columns = (await db.all<{ name: string }>('PRAGMA table_info(role_requests)')).map(column => column.name);
+    expect(columns).toEqual(expect.arrayContaining(['full_name','cpf','birth_date','registration','course_id','subject_id','roster_match','reviewed_by']));
+    const before = await db.one<{ count: number }>('SELECT count(*) count FROM subjects');
+    await db.database().batch(db.catalogStatements(), 'write');
+    expect(await db.one('SELECT count(*) count FROM subjects')).toEqual(before);
+  });
+
+  it('cria as contas de demonstração e restringe por instituição', async () => {
+    const accounts = await db.all<{ email: string; role: string }>("SELECT email,role FROM users WHERE email IN ('admin@demo.local','gestor@demo.local','aluno.ufc@demo.local') ORDER BY email");
+    expect(accounts).toEqual([{ email: 'admin@demo.local', role: 'ADMIN' }, { email: 'aluno.ufc@demo.local', role: 'STUDENT' }, { email: 'gestor@demo.local', role: 'PROFESSOR' }]);
+    expect((await store.getUser('demo-gestor'))?.managed_institution_id).toBe(1);
+    const ufcStudent = await store.getUser('demo-aluno-ufc');
+    expect(ufcStudent?.institution_name).toBe('Universidade Federal do Ceará');
+    expect((await store.getQuestions({ institutionId: ufcStudent!.institution_id! })).map(question => question.id)).toEqual(['demo-q-ufc']);
+    expect(await store.countQuestions({ institutionId: 1 })).toBe(2);
   });
 
   it('pagina perguntas preservando os filtros', async () => {
@@ -88,5 +116,24 @@ describe('persistência libSQL da comunidade acadêmica', () => {
     db.closeDatabaseForTests();
     expect((await store.getQuestion('persist-q'))?.title).toContain('programação funcional');
     expect((await store.getAnswers('persist-q')).map(answer => answer.id)).toContain('persist-a');
+  });
+
+  it('ignora no ranking respostas dadas no perfil de aluno', async () => {
+    const points = async () => (await store.getRanking(1)).find(person => person.id === 'demo-monitor');
+    const before = await points();
+    await db.execute("INSERT INTO answers (id,question_id,author_id,body,status,posted_as) VALUES ('rank-aluno','demo-q2','demo-monitor','Resposta como aluno, não deve pontuar.','APPROVED','STUDENT')");
+    expect((await points())?.answers).toBe(before?.answers);
+    await db.execute("INSERT INTO answers (id,question_id,author_id,body,status,posted_as) VALUES ('rank-monitor','demo-q2','demo-monitor','Resposta como monitor, deve pontuar.','APPROVED','MONITOR')");
+    expect((await points())?.answers).toBe((before?.answers ?? 0) + 1);
+    expect((await points())?.points).toBe((before?.points ?? 0) + 2);
+  });
+
+  it('esconde do chat o monitor em perfil de aluno', async () => {
+    expect((await store.getChatContacts('demo-aluna')).map(contact => contact.id)).toContain('demo-monitor');
+    await db.execute('UPDATE users SET student_mode=1 WHERE id=?','demo-monitor');
+    expect((await store.getChatContacts('demo-aluna')).map(contact => contact.id)).not.toContain('demo-monitor');
+    expect((await store.getUser('demo-monitor'))?.student_mode).toBe(1);
+    await db.execute('UPDATE users SET student_mode=0 WHERE id=?','demo-monitor');
+    expect((await store.getChatContacts('demo-aluno-ufc')).map(contact => contact.id)).not.toContain('demo-monitor');
   });
 });

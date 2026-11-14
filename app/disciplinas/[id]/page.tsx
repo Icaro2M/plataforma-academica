@@ -7,6 +7,7 @@ import { currentUser } from '@/lib/auth';
 import { SubjectSymbol } from '@/components/subject-symbol';
 import { QuestionCard } from '@/components/question-card';
 import { Pagination } from '@/components/pagination';
+import { canAccessInstitution } from '@/lib/roles';
 import { countQuestions, getQuestions, getSubjectCatalog, getSubjectCounts, getSubjectFollowerCount, isSubjectFollowed } from '@/lib/store';
 
 type Filters = { busca?: string; estado?: string; pagina?: string };
@@ -17,6 +18,8 @@ export default async function SubjectPage({ params, searchParams }: { params: Pr
   if (!Number.isSafeInteger(subjectId) || subjectId < 1) notFound();
   const subject = (await getSubjectCatalog()).find(item => item.id === subjectId);
   if (!subject) notFound();
+  const user = await currentUser();
+  if (!canAccessInstitution(user, subject.institution_id)) notFound();
   const raw = await searchParams;
   const search = typeof raw.busca === 'string' ? raw.busca.trim().slice(0, 100) : '';
   const status = raw.estado === 'unanswered' || raw.estado === 'resolved' ? raw.estado : '';
@@ -28,7 +31,6 @@ export default async function SubjectPage({ params, searchParams }: { params: Pr
   const page = Math.min(totalPages, Number.isSafeInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1);
   const questions = await getQuestions({ ...questionFilters, limit: pageSize, offset: (page - 1) * pageSize });
   const counts = await getSubjectCounts(subjectId);
-  const user = await currentUser();
   const following = user ? await isSubjectFollowed(user.id, subjectId) : false;
   const followerCount = await getSubjectFollowerCount(subjectId);
   const statusHref = (next: string) => {

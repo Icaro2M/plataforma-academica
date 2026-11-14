@@ -10,7 +10,7 @@ const sections: [string, string][] = [
   ['/mensagens', 'Conversas de estudo'],
   ['/notificacoes', 'Notificações'],
   ['/minha-atividade', 'Minha atividade'], ['/perfil', 'Meu perfil'],
-  ['/pessoas/', 'Perfil'], ['/administracao', 'Administração'],
+  ['/pessoas/', 'Perfil'], ['/administracao', 'Administração'], ['/gestor', 'Gestor de monitoria'],
   ['/entrar', 'Entrar'], ['/cadastrar', 'Cadastrar'],
 ];
 

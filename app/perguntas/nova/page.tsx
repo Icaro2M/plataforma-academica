@@ -17,6 +17,7 @@ export default async function NewQuestionPage({ searchParams }: { searchParams: 
     <p className="mt-8 text-xs font-bold uppercase tracking-[.16em] text-coral">Nova pergunta</p>
     <h1 className="mt-2 text-3xl font-black tracking-tight">O que você quer entender?</h1>
     <p className="mt-2 text-sm text-slate-500">Escolha primeiro o curso e depois uma disciplina correspondente. Explique o contexto e conte o que já tentou.</p>
+    {user.role === 'MONITOR' && <p className="mt-4 rounded-lg bg-[#f6f8fc] p-3 text-xs text-slate-600">Você vai publicar no <strong>{Number(user.student_mode) === 1 ? 'perfil de aluno' : 'perfil de monitor'}</strong>. Troque o perfil em uso pelo menu lateral.</p>}
     <QuestionComposer courses={courses} subjects={subjects} selectedSubject={selectedSubject} error={error}/>
   </div>;
 }
